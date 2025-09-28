@@ -1,0 +1,159 @@
+version: '3.8'
+
+services:
+  # MinIO Object Storage
+  minio:
+    image: minio/minio:latest
+    container_name: flood-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    networks:
+      - flood-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # MinIO Client - Create buckets
+  minio-client:
+    image: minio/mc:latest
+    container_name: flood-minio-client
+    depends_on:
+      - minio
+    networks:
+      - flood-network
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin123;
+      /usr/bin/mc mb myminio/flood-predictions --ignore-existing;
+      /usr/bin/mc mb myminio/flood-models --ignore-existing;
+      /usr/bin/mc policy set public myminio/flood-predictions;
+      /usr/bin/mc policy set public myminio/flood-models;
+      echo 'MinIO buckets created successfully';
+      "
+
+  # Flood Detection Backend (MCP Server)
+  flood-backend:
+    build:
+      context: ./flood-detection-backend
+      dockerfile: Dockerfile
+    container_name: flood-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - MINIO_ENDPOINT=http://minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - SH_CLIENT_ID=${SH_CLIENT_ID:-}
+      - SH_CLIENT_SECRET=${SH_CLIENT_SECRET:-}
+      - PYTHONPATH=/app
+      - MODEL_CONFIG_FILE=config_granite_geospatial_uki_flood_detection_v1.yaml
+      - MODEL_CHECKPOINT_FILE=granite_geospatial_uki_flood_detection_v1.ckpt
+    volumes:
+      - flood_models:/app/models
+      - flood_configs:/app/configs
+    depends_on:
+      - minio
+    networks:
+      - flood-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Streamlit Frontend
+  flood-frontend:
+    build:
+      context: ./flood-detection-frontend
+      dockerfile: Dockerfile
+    container_name: flood-frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook/flood-detection
+      - BACKEND_MCP_URL=http://flood-backend:8080
+      - ORS_API_KEY=${ORS_API_KEY:-}
+    depends_on:
+      - flood-backend
+      - n8n
+    networks:
+      - flood-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # n8n Workflow Engine
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: flood-n8n
+    entrypoint:
+      - /workflows/bootstrap.sh
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin123
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=UTC
+      - DB_TYPE=sqlite
+      - DB_SQLITE_DATABASE=/home/node/.n8n/database.sqlite
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n-workflows:/workflows
+    networks:
+      - flood-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL for n8n (optional, for production use)
+  # postgres:
+  #   image: postgres:13
+  #   container_name: flood-postgres
+  #   environment:
+  #     POSTGRES_DB: n8n
+  #     POSTGRES_USER: n8n
+  #     POSTGRES_PASSWORD: n8n123
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - flood-network
+
+volumes:
+  minio_data:
+    name: flood_minio_data
+  n8n_data:
+    name: flood_n8n_data
+  flood_models:
+    name: flood_models
+  flood_configs:
+    name: flood_configs
+  # postgres_data:
+  #   name: flood_postgres_data
+
+networks:
+  flood-network:
+    name: flood-network
+    driver: bridge

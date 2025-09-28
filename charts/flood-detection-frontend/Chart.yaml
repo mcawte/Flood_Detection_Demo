@@ -1,0 +1,10 @@
+apiVersion: v2
+name: flood-detection-frontend
+description: Streamlit frontend for flood detection system
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - streamlit
+  - frontend
+  - flood-detection

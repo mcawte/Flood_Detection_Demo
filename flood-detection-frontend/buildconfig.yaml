@@ -1,0 +1,32 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: flood-streamlit-build
+  namespace: sectionsix
+  labels:
+    app: flood-streamlit
+spec:
+  source:
+    type: Git
+    git:
+      uri: https://github.com/mcawte/flood_streamlit.git
+      ref: ocp
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: flood-streamlit:latest
+  triggers:
+    - type: ConfigChange
+    - type: ImageChange
+---
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: flood-streamlit
+  namespace: sectionsix
+  labels:
+    app: flood-streamlit

@@ -1,0 +1,276 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: flood-detection-backend
+  annotations:
+    description: "Flood Detection Backend - AI inference service with MCP"
+    tags: "ai,flood-detection,python,mcp"
+    iconClass: "icon-python"
+objects:
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: flood-detection-backend
+    labels:
+      app: flood-detection-backend
+      component: backend
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: flood-detection-backend
+    labels:
+      app: flood-detection-backend
+      component: backend
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: flood-detection-backend:latest
+    source:
+      git:
+        uri: ${GIT_REPO_URL}
+        ref: ${GIT_REF}
+      contextDir: flood-detection-backend
+      type: Git
+    strategy:
+      dockerStrategy:
+        dockerfilePath: Dockerfile
+      type: Docker
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: flood-backend-secrets
+    labels:
+      app: flood-detection-backend
+      component: backend
+  type: Opaque
+  data:
+    minio-access-key: ${MINIO_ACCESS_KEY_B64}
+    minio-secret-key: ${MINIO_SECRET_KEY_B64}
+    sh-client-id: ${SH_CLIENT_ID_B64}
+    sh-client-secret: ${SH_CLIENT_SECRET_B64}
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: flood-backend-config
+    labels:
+      app: flood-detection-backend
+      component: backend
+  data:
+    MINIO_ENDPOINT: ${MINIO_ENDPOINT}
+    PYTHONPATH: "/app"
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: flood-backend-models
+    labels:
+      app: flood-detection-backend
+      component: backend
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${MODELS_STORAGE_SIZE}
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: flood-backend-configs
+    labels:
+      app: flood-detection-backend
+      component: backend
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${CONFIGS_STORAGE_SIZE}
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    name: flood-detection-backend
+    labels:
+      app: flood-detection-backend
+      component: backend
+  spec:
+    replicas: 1
+    selector:
+      app: flood-detection-backend
+      deploymentconfig: flood-detection-backend
+    strategy:
+      type: Rolling
+      rollingParams:
+        updatePeriodSeconds: 1
+        intervalSeconds: 1
+        timeoutSeconds: 600
+        maxUnavailable: 25%
+        maxSurge: 25%
+    template:
+      metadata:
+        labels:
+          app: flood-detection-backend
+          deploymentconfig: flood-detection-backend
+          component: backend
+      spec:
+        containers:
+        - name: flood-detection-backend
+          image: ' '
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          env:
+          - name: MINIO_ACCESS_KEY
+            valueFrom:
+              secretKeyRef:
+                name: flood-backend-secrets
+                key: minio-access-key
+          - name: MINIO_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                name: flood-backend-secrets
+                key: minio-secret-key
+          - name: SH_CLIENT_ID
+            valueFrom:
+              secretKeyRef:
+                name: flood-backend-secrets
+                key: sh-client-id
+          - name: SH_CLIENT_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: flood-backend-secrets
+                key: sh-client-secret
+          envFrom:
+          - configMapRef:
+              name: flood-backend-config
+          resources:
+            requests:
+              memory: ${MEMORY_REQUEST}
+              cpu: ${CPU_REQUEST}
+            limits:
+              memory: ${MEMORY_LIMIT}
+              cpu: ${CPU_LIMIT}
+          volumeMounts:
+          - name: models-storage
+            mountPath: /app/models
+          - name: configs-storage
+            mountPath: /app/configs
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+        volumes:
+        - name: models-storage
+          persistentVolumeClaim:
+            claimName: flood-backend-models
+        - name: configs-storage
+          persistentVolumeClaim:
+            claimName: flood-backend-configs
+        restartPolicy: Always
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - flood-detection-backend
+        from:
+          kind: ImageStreamTag
+          name: flood-detection-backend:latest
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: flood-detection-backend
+    labels:
+      app: flood-detection-backend
+      component: backend
+  spec:
+    ports:
+    - name: 8080-tcp
+      port: 8080
+      protocol: TCP
+      targetPort: 8080
+    selector:
+      app: flood-detection-backend
+      deploymentconfig: flood-detection-backend
+    type: ClusterIP
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: flood-detection-backend
+    labels:
+      app: flood-detection-backend
+      component: backend
+  spec:
+    host: ${BACKEND_HOSTNAME}
+    to:
+      kind: Service
+      name: flood-detection-backend
+      weight: 100
+    port:
+      targetPort: 8080-tcp
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+parameters:
+- name: GIT_REPO_URL
+  description: "Git repository URL"
+  value: "https://github.com/mcawte/flood_detection_demo.git"
+  required: true
+- name: GIT_REF
+  description: "Git reference (branch/tag)"
+  value: "main"
+  required: true
+- name: MINIO_ENDPOINT
+  description: "MinIO endpoint URL"
+  value: "http://minio:9000"
+  required: true
+- name: MINIO_ACCESS_KEY_B64
+  description: "MinIO access key (base64 encoded)"
+  required: true
+- name: MINIO_SECRET_KEY_B64
+  description: "MinIO secret key (base64 encoded)"
+  required: true
+- name: SH_CLIENT_ID_B64
+  description: "Sentinel Hub client ID (base64 encoded)"
+  required: true
+- name: SH_CLIENT_SECRET_B64
+  description: "Sentinel Hub client secret (base64 encoded)"
+  required: true
+- name: BACKEND_HOSTNAME
+  description: "Backend route hostname"
+  value: ""
+- name: MODELS_STORAGE_SIZE
+  description: "Storage size for models"
+  value: "5Gi"
+  required: true
+- name: CONFIGS_STORAGE_SIZE
+  description: "Storage size for configs"
+  value: "1Gi"
+  required: true
+- name: MEMORY_REQUEST
+  description: "Memory request"
+  value: "2Gi"
+  required: true
+- name: MEMORY_LIMIT
+  description: "Memory limit"
+  value: "4Gi"
+  required: true
+- name: CPU_REQUEST
+  description: "CPU request"
+  value: "500m"
+  required: true
+- name: CPU_LIMIT
+  description: "CPU limit"
+  value: "2000m"
+  required: true

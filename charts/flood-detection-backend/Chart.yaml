@@ -1,0 +1,11 @@
+apiVersion: v2
+name: flood-detection-backend
+description: AI-powered flood detection backend with MCP server
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - flood-detection
+  - ai
+  - mcp
+  - geospatial

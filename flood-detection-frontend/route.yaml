@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: flood-streamlit-route
+  namespace: sectionsix
+  labels:
+    app: flood-streamlit
+spec:
+  to:
+    kind: Service
+    name: flood-streamlit-service
+  port:
+    targetPort: 8501
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

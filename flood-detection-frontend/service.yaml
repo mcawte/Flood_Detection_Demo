@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: flood-streamlit-service
+  namespace: sectionsix
+  labels:
+    app: flood-streamlit
+spec:
+  selector:
+    app: flood-streamlit
+  ports:
+  - port: 8501
+    targetPort: 8501
+    protocol: TCP
+  type: ClusterIP

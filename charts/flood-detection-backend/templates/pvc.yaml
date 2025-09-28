@@ -1,0 +1,35 @@
+{{- if .Values.persistence.models.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "flood-detection-backend.fullname" . }}-models
+  labels:
+    {{- include "flood-detection-backend.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.models.size }}
+  {{- if .Values.persistence.models.storageClass }}
+  storageClassName: {{ .Values.persistence.models.storageClass }}
+  {{- end }}
+---
+{{- end }}
+{{- if .Values.persistence.configs.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "flood-detection-backend.fullname" . }}-configs
+  labels:
+    {{- include "flood-detection-backend.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.configs.size }}
+  {{- if .Values.persistence.configs.storageClass }}
+  storageClassName: {{ .Values.persistence.configs.storageClass }}
+  {{- end }}
+{{- end }}

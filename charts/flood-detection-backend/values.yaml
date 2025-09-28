@@ -1,0 +1,85 @@
+replicaCount: 1
+
+image:
+  repository: flood-detection-backend
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    memory: "2Gi"
+    cpu: "500m"
+  limits:
+    memory: "4Gi"
+    cpu: "2000m"
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Environment variables
+env:
+  MINIO_ENDPOINT: "http://minio:9000"
+  PYTHONPATH: "/app"
+
+model:
+  configFile: "config_granite_geospatial_uki_flood_detection_v2.yaml"
+  checkpointFile: "granite_geospatial_uki_flood_detection_v2.ckpt"
+
+# Secrets (will be populated from parent chart)
+secrets:
+  sentinelHub:
+    clientId: ""
+    clientSecret: ""
+  minio:
+    accessKey: ""
+    secretKey: ""
+
+# Persistent volumes
+persistence:
+  models:
+    enabled: true
+    size: 5Gi
+    storageClass: ""
+  configs:
+    enabled: true
+    size: 1Gi
+    storageClass: ""

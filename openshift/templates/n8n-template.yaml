@@ -1,0 +1,322 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: n8n
+  annotations:
+    description: "n8n Workflow Automation Platform"
+    tags: "n8n,workflow,automation,nodejs"
+    iconClass: "icon-nodejs"
+objects:
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: n8n-secrets
+    labels:
+      app: n8n
+      component: workflow
+  type: Opaque
+  data:
+    basic-auth-user: ${N8N_BASIC_AUTH_USER_B64}
+    basic-auth-password: ${N8N_BASIC_AUTH_PASSWORD_B64}
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: n8n-config
+    labels:
+      app: n8n
+      component: workflow
+  data:
+    N8N_BASIC_AUTH_ACTIVE: "true"
+    N8N_HOST: ${N8N_HOST}
+    N8N_PORT: "5678"
+    N8N_PROTOCOL: "http"
+    WEBHOOK_URL: ${WEBHOOK_URL}
+    GENERIC_TIMEZONE: "UTC"
+    DB_TYPE: "sqlite"
+    DB_SQLITE_DATABASE: "/home/node/.n8n/database.sqlite"
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: n8n-data
+    labels:
+      app: n8n
+      component: workflow
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: ${STORAGE_SIZE}
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    name: n8n
+    labels:
+      app: n8n
+      component: workflow
+  spec:
+    replicas: 1
+    selector:
+      app: n8n
+      deploymentconfig: n8n
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          app: n8n
+          deploymentconfig: n8n
+          component: workflow
+      spec:
+        containers:
+        - name: n8n
+          image: n8nio/n8n:${N8N_VERSION}
+          command:
+          - /bin/sh
+          - /workflows/bootstrap.sh
+          ports:
+          - containerPort: 5678
+            protocol: TCP
+          envFrom:
+          - configMapRef:
+              name: n8n-config
+          env:
+          - name: N8N_BASIC_AUTH_USER
+            valueFrom:
+              secretKeyRef:
+                name: n8n-secrets
+                key: basic-auth-user
+          - name: N8N_BASIC_AUTH_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: n8n-secrets
+                key: basic-auth-password
+          - name: N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS
+            value: "true"
+          resources:
+            requests:
+              memory: ${MEMORY_REQUEST}
+              cpu: ${CPU_REQUEST}
+            limits:
+              memory: ${MEMORY_LIMIT}
+              cpu: ${CPU_LIMIT}
+          volumeMounts:
+          - name: n8n-data
+            mountPath: /home/node/.n8n
+          - name: workflows
+            mountPath: /workflows
+            readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 5678
+            initialDelaySeconds: 30
+            periodSeconds: 10
+        volumes:
+        - name: n8n-data
+          persistentVolumeClaim:
+            claimName: n8n-data
+        - name: workflows
+          configMap:
+            name: n8n-workflows
+            optional: true
+            defaultMode: 0755
+        restartPolicy: Always
+    triggers:
+    - type: ConfigChange
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: n8n-workflows
+    labels:
+      app: n8n
+      component: workflow
+  data:
+    bootstrap.sh: |
+      #!/bin/sh
+      set -e
+
+      if [ -d /workflows ]; then
+        for wf in /workflows/*.json; do
+          if [ -f "$wf" ]; then
+            echo "[n8n] Importing workflow $wf"
+            n8n import:workflow --input "$wf" || echo "[n8n] Warning: failed to import $wf"
+          fi
+        done
+        echo "[n8n] Activating imported workflows"
+        n8n update:workflow --all --active=true || echo "[n8n] Warning: failed to activate workflows"
+      else
+        echo "[n8n] /workflows directory not found; skipping import"
+      fi
+
+      exec n8n start
+    flood-detection.json: |
+      {
+        "name": "Flood Detection Workflow",
+        "nodes": [
+          {
+            "parameters": {
+              "httpMethod": "POST",
+              "path": "flood-detection",
+              "responseMode": "responseNode",
+              "options": {}
+            },
+            "id": "webhook-1",
+            "name": "Webhook",
+            "type": "n8n-nodes-base.webhook",
+            "typeVersion": 1,
+            "position": [240, 300],
+            "webhookId": "flood-detection"
+          },
+          {
+            "parameters": {
+              "url": "={{$node[\"Webhook\"].json[\"backend_url\"]}}/detect_flood_from_coordinates",
+              "sendQuery": false,
+              "sendHeaders": false,
+              "sendBody": true,
+              "contentType": "json",
+              "body": {
+                "bbox_str": "={{$node[\"Webhook\"].json[\"coordinates\"]}}",
+                "analysis_date_timestamp": "={{$node[\"Webhook\"].json[\"timestamp\"]}}"
+              },
+              "options": {}
+            },
+            "id": "http-request-1",
+            "name": "Call Flood Detection API",
+            "type": "n8n-nodes-base.httpRequest",
+            "typeVersion": 4.1,
+            "position": [460, 300]
+          },
+          {
+            "parameters": {
+              "respondWith": "json",
+              "responseBody": {
+                "status": "success",
+                "result_url": "={{$node[\"Call Flood Detection API\"].json[\"result_url\"]}}",
+                "timestamp": "={{$now}}"
+              }
+            },
+            "id": "respond-1",
+            "name": "Respond to Webhook",
+            "type": "n8n-nodes-base.respondToWebhook",
+            "typeVersion": 1,
+            "position": [680, 300]
+          }
+        ],
+        "connections": {
+          "Webhook": {
+            "main": [
+              [
+                {
+                  "node": "Call Flood Detection API",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          },
+          "Call Flood Detection API": {
+            "main": [
+              [
+                {
+                  "node": "Respond to Webhook",
+                  "type": "main",
+                  "index": 0
+                }
+              ]
+            ]
+          }
+        },
+        "createdAt": "2025-01-19T08:00:00.000Z",
+        "updatedAt": "2025-01-19T08:00:00.000Z",
+        "settings": {
+          "executionOrder": "v1"
+        }
+      }
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: n8n
+    labels:
+      app: n8n
+      component: workflow
+  spec:
+    ports:
+    - name: 5678-tcp
+      port: 5678
+      protocol: TCP
+      targetPort: 5678
+    selector:
+      app: n8n
+      deploymentconfig: n8n
+    type: ClusterIP
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: n8n
+    labels:
+      app: n8n
+      component: workflow
+    annotations:
+      haproxy.router.openshift.io/timeout: "300s"
+  spec:
+    host: ${N8N_HOSTNAME}
+    to:
+      kind: Service
+      name: n8n
+      weight: 100
+    port:
+      targetPort: 5678-tcp
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+parameters:
+- name: N8N_VERSION
+  description: "n8n Docker image version"
+  value: "latest"
+  required: true
+- name: N8N_BASIC_AUTH_USER_B64
+  description: "n8n basic auth user (base64 encoded)"
+  value: "YWRtaW4="
+  required: true
+- name: N8N_BASIC_AUTH_PASSWORD_B64
+  description: "n8n basic auth password (base64 encoded)"
+  value: "YWRtaW4xMjM="
+  required: true
+- name: N8N_HOST
+  description: "n8n host"
+  value: "localhost"
+  required: true
+- name: WEBHOOK_URL
+  description: "Webhook base URL"
+  value: "http://localhost:5678/"
+  required: true
+- name: N8N_HOSTNAME
+  description: "n8n route hostname"
+  value: ""
+- name: STORAGE_SIZE
+  description: "Storage size for n8n data"
+  value: "1Gi"
+  required: true
+- name: MEMORY_REQUEST
+  description: "Memory request"
+  value: "512Mi"
+  required: true
+- name: MEMORY_LIMIT
+  description: "Memory limit"
+  value: "1Gi"
+  required: true
+- name: CPU_REQUEST
+  description: "CPU request"
+  value: "200m"
+  required: true
+- name: CPU_LIMIT
+  description: "CPU limit"
+  value: "500m"
+  required: true

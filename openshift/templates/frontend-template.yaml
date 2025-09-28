@@ -1,0 +1,190 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: flood-detection-frontend
+  annotations:
+    description: "Flood Detection Frontend - Streamlit web application"
+    tags: "streamlit,frontend,python,web"
+    iconClass: "icon-python"
+objects:
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: flood-detection-frontend
+    labels:
+      app: flood-detection-frontend
+      component: frontend
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: flood-detection-frontend
+    labels:
+      app: flood-detection-frontend
+      component: frontend
+  spec:
+    output:
+      to:
+        kind: ImageStreamTag
+        name: flood-detection-frontend:latest
+    source:
+      git:
+        uri: ${GIT_REPO_URL}
+        ref: ${GIT_REF}
+      contextDir: flood-detection-frontend
+      type: Git
+    strategy:
+      dockerStrategy:
+        dockerfilePath: Dockerfile
+      type: Docker
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: flood-frontend-config
+    labels:
+      app: flood-detection-frontend
+      component: frontend
+  data:
+    N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL}
+    BACKEND_MCP_URL: ${BACKEND_MCP_URL}
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    name: flood-detection-frontend
+    labels:
+      app: flood-detection-frontend
+      component: frontend
+  spec:
+    replicas: 1
+    selector:
+      app: flood-detection-frontend
+      deploymentconfig: flood-detection-frontend
+    strategy:
+      type: Rolling
+      rollingParams:
+        updatePeriodSeconds: 1
+        intervalSeconds: 1
+        timeoutSeconds: 600
+        maxUnavailable: 25%
+        maxSurge: 25%
+    template:
+      metadata:
+        labels:
+          app: flood-detection-frontend
+          deploymentconfig: flood-detection-frontend
+          component: frontend
+      spec:
+        containers:
+        - name: flood-detection-frontend
+          image: ' '
+          ports:
+          - containerPort: 8501
+            protocol: TCP
+          envFrom:
+          - configMapRef:
+              name: flood-frontend-config
+          resources:
+            requests:
+              memory: ${MEMORY_REQUEST}
+              cpu: ${CPU_REQUEST}
+            limits:
+              memory: ${MEMORY_LIMIT}
+              cpu: ${CPU_LIMIT}
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: 8501
+            initialDelaySeconds: 15
+            periodSeconds: 10
+        restartPolicy: Always
+    triggers:
+    - type: ConfigChange
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - flood-detection-frontend
+        from:
+          kind: ImageStreamTag
+          name: flood-detection-frontend:latest
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: flood-detection-frontend
+    labels:
+      app: flood-detection-frontend
+      component: frontend
+  spec:
+    ports:
+    - name: 8501-tcp
+      port: 8501
+      protocol: TCP
+      targetPort: 8501
+    selector:
+      app: flood-detection-frontend
+      deploymentconfig: flood-detection-frontend
+    type: ClusterIP
+- apiVersion: route.openshift.io/v1
+  kind: Route
+  metadata:
+    name: flood-detection-frontend
+    labels:
+      app: flood-detection-frontend
+      component: frontend
+    annotations:
+      haproxy.router.openshift.io/timeout: "300s"
+  spec:
+    host: ${FRONTEND_HOSTNAME}
+    to:
+      kind: Service
+      name: flood-detection-frontend
+      weight: 100
+    port:
+      targetPort: 8501-tcp
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+parameters:
+- name: GIT_REPO_URL
+  description: "Git repository URL"
+  value: "https://github.com/mcawte/flood_detection_demo.git"
+  required: true
+- name: GIT_REF
+  description: "Git reference (branch/tag)"
+  value: "main"
+  required: true
+- name: N8N_WEBHOOK_URL
+  description: "n8n webhook URL"
+  value: "http://n8n:5678/webhook/flood-detection"
+  required: true
+- name: BACKEND_MCP_URL
+  description: "Backend MCP service URL"
+  value: "http://flood-detection-backend:8080"
+  required: true
+- name: FRONTEND_HOSTNAME
+  description: "Frontend route hostname"
+  value: ""
+- name: MEMORY_REQUEST
+  description: "Memory request"
+  value: "512Mi"
+  required: true
+- name: MEMORY_LIMIT
+  description: "Memory limit"
+  value: "1Gi"
+  required: true
+- name: CPU_REQUEST
+  description: "CPU request"
+  value: "200m"
+  required: true
+- name: CPU_LIMIT
+  description: "CPU limit"
+  value: "500m"
+  required: true

@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flood-streamlit
+  namespace: sectionsix
+  labels:
+    app: flood-streamlit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flood-streamlit
+  template:
+    metadata:
+      labels:
+        app: flood-streamlit
+    spec:
+      containers:
+      - name: flood-streamlit
+        image: image-registry.openshift-image-registry.svc:5000/sectionsix/flood-streamlit:latest
+        ports:
+        - containerPort: 8501
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        env:
+        - name: STREAMLIT_SERVER_PORT
+          value: "8501"
+        - name: STREAMLIT_SERVER_ADDRESS
+          value: "0.0.0.0"
+        - name: ORS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: flood-streamlit-secrets
+              key: ORS_API_KEY
+        livenessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /_stcore/health
+            port: 8501
+          initialDelaySeconds: 5
+          periodSeconds: 5
