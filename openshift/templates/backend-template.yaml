@@ -36,6 +36,11 @@ objects:
       dockerStrategy:
         dockerfilePath: Dockerfile
       type: Docker
+    resources:
+      requests:
+        ephemeral-storage: ${BUILD_EPHEMERAL_STORAGE_REQUEST}
+      limits:
+        ephemeral-storage: ${BUILD_EPHEMERAL_STORAGE_LIMIT}
     triggers:
     - type: ConfigChange
     - type: ImageChange
@@ -273,4 +278,12 @@ parameters:
 - name: CPU_LIMIT
   description: "CPU limit"
   value: "2000m"
+  required: true
+- name: BUILD_EPHEMERAL_STORAGE_REQUEST
+  description: "Ephemeral storage request for backend builds"
+  value: "15Gi"
+  required: true
+- name: BUILD_EPHEMERAL_STORAGE_LIMIT
+  description: "Ephemeral storage limit for backend builds"
+  value: "25Gi"
   required: true

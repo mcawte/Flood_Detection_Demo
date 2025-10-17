@@ -2,7 +2,7 @@
 boto3>=1.28,<2
 requests>=2.31,<3
 fastapi>=0.110,<0.116
-uvicorn[standard]>=0.30,<0.31
+uvicorn[standard]>=0.31.1,<0.32
 
 # Geospatial + data utilities
 numpy<2
