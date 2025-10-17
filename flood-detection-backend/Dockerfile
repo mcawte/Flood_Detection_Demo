@@ -8,22 +8,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set environment variables
 ENV PYTHONPATH="/app"
 
-# Install Python dependencies in smaller groups with cache cleaning
-# Core dependencies first
+# Copy dependency manifests separately to leverage Docker layer caching
+COPY requirements-backend.txt constraints-backend.txt /tmp/pip/
+
+# Install Python dependencies with pinned versions
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip3 install --no-cache-dir boto3 requests mcp "gradio[mcp]" numpy sentinelhub rasterio && \
-    pip3 install --no-cache-dir python-multipart pytorch-lightning==2.1.1
-
-# ML dependencies
-RUN pip3 install --no-cache-dir torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cpu
-
-# Geo dependencies
-RUN pip3 install --no-cache-dir rioxarray && \
-    pip3 install --no-cache-dir global_land_mask
-
-# Install terratorch
-RUN pip3 install --no-cache-dir "terratorch @ git+https://github.com/IBM/terratorch.git@6d97521" && \
-    pip3 install --no-cache-dir lightning-utilities
+    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.1.0 torchvision==0.16.0 && \
+    pip3 install --no-cache-dir --upgrade-strategy only-if-needed -r /tmp/pip/requirements-backend.txt -c /tmp/pip/constraints-backend.txt
 
 # Create directory structure
 WORKDIR /app
