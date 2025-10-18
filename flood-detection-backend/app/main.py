@@ -55,6 +55,8 @@ MODEL_DOWNLOAD_CHUNK_SIZE = int(
 SH_CLIENT_ID = os.environ.get("SH_CLIENT_ID")
 SH_CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 
+DEFAULT_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+
 
 def upload_to_minio(file_path: str, object_name: str) -> str:
     """
@@ -106,6 +108,28 @@ def download_file(url: str, dest: Path) -> None:
             for chunk in response.iter_content(MODEL_DOWNLOAD_CHUNK_SIZE):
                 if chunk:
                     fh.write(chunk)
+
+
+def coerce_to_timestamp(value: Union[float, int, str, datetime]) -> float:
+    """
+    Convert different time representations into a POSIX timestamp.
+    """
+    if isinstance(value, (float, int)):
+        return float(value)
+
+    if isinstance(value, datetime):
+        return value.timestamp()
+
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value).timestamp()
+        except ValueError:
+            try:
+                return datetime.strptime(value, DEFAULT_DATETIME_FORMAT).timestamp()
+            except ValueError as exc:
+                raise ValueError(f"Invalid datetime string: {value}") from exc
+
+    raise ValueError(f"Unsupported datetime value: {value!r}")
 
 
 def fetch_sentinel2_data(bbox: tuple, time_interval: tuple, config: SHConfig):
@@ -567,7 +591,7 @@ def detect_flood_from_file(temp_file) -> str:
         raise gr.Error(str(e))
 
 
-def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: float) -> str:
+def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[float, int, str, datetime]) -> str:
     """
     Orchestrates the entire process: fetch from Sentinel Hub, run inference,
     and upload the result.
@@ -577,8 +601,11 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: float)
 
     try:
         # 1. Parse Inputs from Gradio UI
-        analysis_date = datetime.fromtimestamp(
-            analysis_date_timestamp).date()
+        try:
+            timestamp = coerce_to_timestamp(analysis_date_timestamp)
+        except ValueError as exc:
+            raise gr.Error(str(exc))
+        analysis_date = datetime.fromtimestamp(timestamp).date()
 
         bbox_parts = [float(p.strip()) for p in bbox_str.split(',')]
         if len(bbox_parts) != 4:
@@ -633,15 +660,12 @@ class FloodDetectionRequest(BaseModel):
     backend_url: Optional[str] = None  # accepted but ignored; useful for workflow chaining
 
     def resolved_timestamp(self) -> float:
-        value = self.analysis_date_timestamp
-        if isinstance(value, (float, int)):
-            return float(value)
-        # attempt to parse ISO string
         try:
-            dt = datetime.fromisoformat(value)
-            return dt.timestamp()
-        except Exception as exc:
-            raise ValueError(f"Invalid analysis_date_timestamp: {value}") from exc
+            return coerce_to_timestamp(self.analysis_date_timestamp)
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid analysis_date_timestamp: {self.analysis_date_timestamp}"
+            ) from exc
 
 
 # --- Create the Gradio Interface ---
@@ -672,8 +696,6 @@ interface_file = gr.Interface(
     description="Upload a GeoTIFF image directly to run flood detection."
 )
 
-DEFAULT_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
-
 inferface_coordinates_datetime = gr.Interface(
     fn=fetch_and_run_flood_detection,
     inputs=[
@@ -683,8 +705,7 @@ inferface_coordinates_datetime = gr.Interface(
         ),
         gr.DateTime(
             label="Analysis DateTime",
-            value=datetime.now().strftime(DEFAULT_DATETIME_FORMAT),
-            time_format=DEFAULT_DATETIME_FORMAT,
+            value=datetime.now(),
         )
     ],
     outputs=gr.Textbox(label="🔗 MinIO URL for Flood Prediction Map"),
