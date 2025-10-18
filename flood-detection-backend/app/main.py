@@ -41,6 +41,10 @@ MODEL_CHECKPOINT_FALLBACK_URL = os.environ.get(
     "MODEL_CHECKPOINT_FALLBACK_URL",
     "https://huggingface.co/ibm-granite/granite-geospatial-uki-flooddetection/resolve/main/granite_geospatial_uki_flood_detection_v1.ckpt?download=1",
 )
+MODEL_CONFIG_FALLBACK_URL = os.environ.get(
+    "MODEL_CONFIG_FALLBACK_URL",
+    "https://huggingface.co/ibm-granite/granite-geospatial-uki-flooddetection/resolve/main/config.yaml?download=1",
+)
 HF_AUTH_TOKEN = os.environ.get("HF_AUTH_TOKEN")
 MODEL_DOWNLOAD_CHUNK_SIZE = int(
     os.environ.get("MODEL_DOWNLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
@@ -299,7 +303,7 @@ def ensure_files_exist():
     files_to_check = {
         Path(CONFIG_PATH): {
             "minio": MODEL_CONFIG_FILENAME,
-            "fallback": None,
+            "fallback": MODEL_CONFIG_FALLBACK_URL,
         },
         Path(CHECKPOINT_PATH): {
             "minio": MODEL_CHECKPOINT_FILENAME,
