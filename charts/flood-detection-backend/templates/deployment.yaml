@@ -66,6 +66,12 @@ spec:
                 secretKeyRef:
                   name: {{ include "flood-detection-backend.fullname" . }}-secrets
                   key: sh-client-secret
+            - name: GRADIO_MCP_SERVER
+              value: "true"
+            - name: MPLCONFIGDIR
+              value: "/tmp/matplotlib"
+            - name: HOME
+              value: "/tmp"
           livenessProbe:
             httpGet:
               path: /health
