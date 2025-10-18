@@ -716,7 +716,7 @@ inferface_coordinates_datetime = gr.Interface(
         ["-1.57, 53.80, -1.50, 53.83", datetime(2025, 1, 10).strftime(DEFAULT_DATETIME_FORMAT)],
         ["28.85, 40.97, 28.90, 41.00", datetime(2025, 7, 17, 15, 30).strftime(DEFAULT_DATETIME_FORMAT)]
     ],
-    allow_flagging="never"
+    flagging_mode="never"
 )
 
 # Combine them into a single app with tabs
