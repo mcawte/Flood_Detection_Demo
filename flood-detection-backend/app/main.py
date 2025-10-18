@@ -439,7 +439,8 @@ def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: st
         f"--trainer.accelerator={accelerator}",
         "--trainer.devices=1",
         "--data.init_args.batch_size=1",
-        "--trainer.default_root_dir=/app/data"
+        "--trainer.default_root_dir=/app/data",
+        "--trainer.enable_checkpointing=false"
     ]
 
     print(f"\nExecuting command: {' '.join(command)}")
