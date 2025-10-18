@@ -11,6 +11,7 @@ from pathlib import Path
 import torch
 import sys
 import boto3
+from botocore.exceptions import ClientError
 import numpy as np
 import rasterio
 from rasterio.transform import from_bounds
@@ -35,6 +36,15 @@ MINIO_BUCKET = os.environ.get('MINIO_PREDICTIONS_BUCKET', 'flood-predictions')
 MINIO_MODELS_BUCKET = os.environ.get('MINIO_MODELS_BUCKET', 'flood-models')
 MINIO_REGION = os.environ.get('MINIO_REGION', 'us-east-1')
 MINIO_VERIFY_SSL = os.environ.get('MINIO_VERIFY_SSL', 'false').lower() in {'1', 'true', 'yes'}
+
+MODEL_CHECKPOINT_FALLBACK_URL = os.environ.get(
+    "MODEL_CHECKPOINT_FALLBACK_URL",
+    "https://huggingface.co/ibm-granite/granite-geospatial-uki-flooddetection/resolve/main/granite_geospatial_uki_flood_detection_v1.ckpt?download=1",
+)
+HF_AUTH_TOKEN = os.environ.get("HF_AUTH_TOKEN")
+MODEL_DOWNLOAD_CHUNK_SIZE = int(
+    os.environ.get("MODEL_DOWNLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
+)
 
 # --- Sentinel Hub Configuration ---
 # Secrets must be set as environment variables
@@ -75,6 +85,23 @@ def upload_to_minio(file_path: str, object_name: str) -> str:
     except Exception as e:
         print(f"Error uploading to MinIO: {e}", file=sys.stderr)
         raise gr.Error(f"Failed to upload result to MinIO: {e}")
+
+
+def download_file(url: str, dest: Path) -> None:
+    """
+    Download a file from the given URL to the destination path.
+    Supports optional Hugging Face bearer token authentication.
+    """
+    headers = {}
+    if HF_AUTH_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_AUTH_TOKEN}"
+
+    with requests.get(url, stream=True, timeout=300, headers=headers) as response:
+        response.raise_for_status()
+        with open(dest, "wb") as fh:
+            for chunk in response.iter_content(MODEL_DOWNLOAD_CHUNK_SIZE):
+                if chunk:
+                    fh.write(chunk)
 
 
 def fetch_sentinel2_data(bbox: tuple, time_interval: tuple, config: SHConfig):
@@ -270,43 +297,100 @@ def ensure_files_exist():
     If not, download them from the 'flood-models' MinIO bucket.
     """
     files_to_check = {
-        CONFIG_PATH: MODEL_CONFIG_FILENAME,
-        CHECKPOINT_PATH: MODEL_CHECKPOINT_FILENAME,
+        Path(CONFIG_PATH): {
+            "minio": MODEL_CONFIG_FILENAME,
+            "fallback": None,
+        },
+        Path(CHECKPOINT_PATH): {
+            "minio": MODEL_CHECKPOINT_FILENAME,
+            "fallback": MODEL_CHECKPOINT_FALLBACK_URL,
+        },
     }
 
-    # Don't try to download if credentials aren't set
-    if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
-        print("WARNING: MinIO credentials not found. Cannot check or download model files.")
-        return
+    s3_client = None
 
-    s3_client = boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        region_name=MINIO_REGION,
-        use_ssl=MINIO_ENDPOINT.startswith('https://'),
-        verify=MINIO_VERIFY_SSL,
-    )
+    if MINIO_ACCESS_KEY and MINIO_SECRET_KEY:
+        try:
+            s3_client = boto3.client(
+                "s3",
+                endpoint_url=MINIO_ENDPOINT,
+                aws_access_key_id=MINIO_ACCESS_KEY,
+                aws_secret_access_key=MINIO_SECRET_KEY,
+                region_name=MINIO_REGION,
+                use_ssl=MINIO_ENDPOINT.startswith('https://'),
+                verify=MINIO_VERIFY_SSL,
+            )
+        except Exception as e:
+            print(f"⚠️ WARNING: Failed to create MinIO client: {e}", file=sys.stderr)
+    else:
+        print(
+            "WARNING: MinIO credentials not found. Falling back to external downloads where available."
+        )
 
-    for local_path, minio_filename in files_to_check.items():
-        if Path(local_path).exists():
+    for local_path, meta in files_to_check.items():
+        minio_key = meta["minio"]
+        fallback_url = meta["fallback"]
+
+        if local_path.exists():
             print(f"✅ File already exists locally: {local_path}")
-        else:
-            print(
-                f"⬇️ File not found. Downloading '{minio_filename}' from MinIO...")
-            # Ensure local directory exists
-            Path(local_path).parent.mkdir(parents=True, exist_ok=True)
+            continue
+
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        downloaded = False
+
+        if s3_client:
             try:
-                s3_client.download_file(
-                    MINIO_MODELS_BUCKET, minio_filename, local_path
+                print(
+                    f"⬇️ File not found locally. Downloading '{minio_key}' from MinIO..."
                 )
-                print(f"✅ Successfully downloaded {local_path}")
+                s3_client.download_file(
+                    MINIO_MODELS_BUCKET, minio_key, str(local_path)
+                )
+                print(f"✅ Successfully downloaded {local_path} from MinIO")
+                downloaded = True
+            except ClientError as e:
+                error_code = e.response.get("Error", {}).get("Code")
+                print(
+                    f"⚠️ MinIO download failed for '{minio_key}' (code={error_code}): {e}"
+                )
             except Exception as e:
                 print(
-                    f"❌ ERROR: Failed to download {minio_filename}: {e}", file=sys.stderr)
-                # This is a critical failure, so we exit.
-                sys.exit(1)
+                    f"⚠️ Unexpected error downloading '{minio_key}' from MinIO: {e}",
+                    file=sys.stderr,
+                )
+
+        if not downloaded and fallback_url:
+            try:
+                print(
+                    f"⬇️ Downloading '{minio_key}' from fallback URL: {fallback_url}"
+                )
+                download_file(fallback_url, local_path)
+                downloaded = True
+                if s3_client:
+                    try:
+                        s3_client.upload_file(
+                            str(local_path), MINIO_MODELS_BUCKET, minio_key
+                        )
+                        print(
+                            f"✅ Seeded MinIO bucket '{MINIO_MODELS_BUCKET}' with '{minio_key}'"
+                        )
+                    except Exception as e:
+                        print(
+                            f"⚠️ Warning: failed to upload '{minio_key}' to MinIO: {e}",
+                            file=sys.stderr,
+                        )
+            except Exception as e:
+                print(
+                    f"❌ ERROR: Failed to download '{minio_key}' from fallback: {e}",
+                    file=sys.stderr,
+                )
+
+        if not downloaded:
+            print(
+                f"❌ ERROR: Required model asset '{minio_key}' is unavailable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 
 def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: str) -> str:
