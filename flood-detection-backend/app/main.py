@@ -55,7 +55,7 @@ MODEL_DOWNLOAD_CHUNK_SIZE = int(
 SH_CLIENT_ID = os.environ.get("SH_CLIENT_ID")
 SH_CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 
-DEFAULT_DATETIME_FORMAT = "%Y-%m-%dT%H:%M:%S"
+DEFAULT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
 def upload_to_minio(file_path: str, object_name: str) -> str:
@@ -750,5 +750,6 @@ app = gr.mount_gradio_app(api_app, demo, path="/")
 
 # Launch the interface
 if __name__ == "__main__":
+    import uvicorn
     ensure_files_exist()
-    demo.launch(server_name="0.0.0.0", server_port=8080, mcp_server=True)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
