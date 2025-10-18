@@ -2,7 +2,8 @@
 boto3>=1.28,<2
 requests>=2.31,<3
 fastapi>=0.110,<0.116
-uvicorn[standard]>=0.31.1,<0.32
+# MCP 1.15.x expects uvicorn 0.30.x; keep below 0.31 to match dependency constraints
+uvicorn[standard]>=0.30,<0.31
 
 # Geospatial + data utilities
 numpy<2
@@ -12,7 +13,7 @@ global_land_mask>=1.0,<2
 sentinelhub==3.11.3
 
 # Model runtime
-mcp==1.16.0
+mcp==1.15.0
 gradio[mcp]
 python-multipart==0.0.9
 pytorch-lightning==2.1.1
