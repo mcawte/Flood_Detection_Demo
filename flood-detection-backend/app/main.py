@@ -705,7 +705,7 @@ inferface_coordinates_datetime = gr.Interface(
         ),
         gr.DateTime(
             label="Analysis DateTime",
-            value=datetime.now(),
+            value=datetime.now().strftime(DEFAULT_DATETIME_FORMAT),
         )
     ],
     outputs=gr.Textbox(label="🔗 MinIO URL for Flood Prediction Map"),
