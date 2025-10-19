@@ -86,17 +86,15 @@ def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
         )
         return
 
-    # --- THIS BLOCK IS FIXED ---
-    # We remove 'and checkpoint[key]' to ensure the key is popped
-    # even if it's an empty dict, which evaluates to False.
     patched = False
     for key in ("hyper_parameters", "hparams", "hyperparameters"):
         if key in checkpoint:
             checkpoint.pop(key, None)  # Use .pop() to guarantee removal
             patched = True
-    # --- END FIX ---
 
     if not patched:
+        # --- NEW: Print message even if no change needed ---
+        print(f"✅ Checkpoint hyperparameters already clean: {checkpoint_path}")
         return
 
     tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
@@ -181,7 +179,6 @@ def _fallback_mode_text_replace(raw_text: str, config_path: Path) -> None:
             f"ℹ️ Normalised boolean mode fields in {config_path} (text replace)")
 
 
-# --- THIS ENTIRE FUNCTION IS REPLACED ---
 def normalise_boolean_mode_fields(config_path: Path) -> None:
     """
     Ensure Lightning callback/scheduler `mode` parameters are valid strings.
@@ -193,6 +190,8 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
     try:
         raw_text = config_path.read_text()
     except FileNotFoundError:
+        print(
+            f"⚠️ Config file not found, cannot patch: {config_path}", file=sys.stderr)
         return
 
     if not raw_text.strip():
@@ -238,19 +237,60 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
                     "init_args": {
                         "monitor": "val/loss",  # This value doesn't matter, but must be valid
                         "mode": "min",         # This is the critical fix
-                        "save_top_k": 0,       # Don't save anything
+                        "save_top_k": 0        # Don't save anything
                     }
                 })
                 callbacks_changed = True
+        else:  # Handle case where callbacks might not be a list initially
+            print("ℹ️ Initializing trainer callbacks list and injecting ModelCheckpoint.")
+            parsed["trainer"]["callbacks"] = [{
+                "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
+                "init_args": {
+                    "monitor": "val/loss",
+                    "mode": "min",
+                    "save_top_k": 0
+                }
+            }]
+            callbacks_changed = True
+    elif "trainer" in parsed:  # Handle case where trainer exists but callbacks doesn't
+        print("ℹ️ Adding trainer callbacks list and injecting ModelCheckpoint.")
+        parsed["trainer"]["callbacks"] = [{
+            "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
+            "init_args": {
+                "monitor": "val/loss",
+                "mode": "min",
+                "save_top_k": 0
+            }
+        }]
+        callbacks_changed = True
+    else:  # Handle case where trainer section doesn't exist
+        print("ℹ️ Adding trainer section and injecting ModelCheckpoint.")
+        parsed["trainer"] = {
+            "callbacks": [{
+                "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
+                "init_args": {
+                    "monitor": "val/loss",
+                    "mode": "min",
+                    "save_top_k": 0
+                }
+            }]
+        }
+        callbacks_changed = True
     # --- END NEW LOGIC ---
 
     # Now, run the original logic to fix any other 'mode: True' issues
     nodes_changed = _normalise_mode_nodes(parsed)
 
     if nodes_changed or callbacks_changed:  # Check if *either* change happened
-        config_path.write_text(yaml.safe_dump(parsed, sort_keys=False))
-        print(f"ℹ️ Patched and saved config file: {config_path}")
-# --- END REPLACED FUNCTION ---
+        try:
+            config_path.write_text(yaml.safe_dump(parsed, sort_keys=False))
+            print(f"✅ Patched and saved config file: {config_path}")
+        except Exception as write_exc:
+            print(
+                f"⚠️ Failed to write patched config file {config_path}: {write_exc}", file=sys.stderr)
+    else:
+        # --- NEW: Print message even if no change needed ---
+        print(f"✅ Config file already patched/correct: {config_path}")
 
 
 def upload_to_minio(file_path: str, object_name: str) -> str:
@@ -514,24 +554,26 @@ def fetch_sentinel_image(bbox: tuple, target_date: datetime) -> bytes:
         raise gr.Error(f"Failed to fetch satellite data: {e}")
 
 
+# --- THIS FUNCTION IS MODIFIED ---
 def ensure_files_exist():
     """
     On startup, check if the config and model files exist locally.
-    If not, download them from the 'flood-models' MinIO bucket.
+    If not, download them. **Always applies patches.**
     """
     files_to_check = {
         Path(CONFIG_PATH): {
             "minio": MODEL_CONFIG_FILENAME,
             "fallback": MODEL_CONFIG_FALLBACK_URL,
+            "patch_func": normalise_boolean_mode_fields,  # Reference to the patch function
         },
         Path(CHECKPOINT_PATH): {
             "minio": MODEL_CHECKPOINT_FILENAME,
             "fallback": MODEL_CHECKPOINT_FALLBACK_URL,
+            "patch_func": _strip_checkpoint_hparams,  # Reference to the patch function
         },
     }
 
     s3_client = None
-
     if MINIO_ACCESS_KEY and MINIO_SECRET_KEY:
         try:
             s3_client = boto3.client(
@@ -547,91 +589,72 @@ def ensure_files_exist():
             print(
                 f"⚠️ WARNING: Failed to create MinIO client: {e}", file=sys.stderr)
     else:
-        print(
-            "WARNING: MinIO credentials not found. Falling back to external downloads where available."
-        )
+        print("WARNING: MinIO credentials not found. Falling back to external downloads where available.")
 
     for local_path, meta in files_to_check.items():
         minio_key = meta["minio"]
         fallback_url = meta["fallback"]
+        patch_func = meta["patch_func"]  # Get the patch function
 
-        if local_path.exists():
-            if local_path.suffix.lower() in {".yaml", ".yml"}:
-                normalise_boolean_mode_fields(local_path)
-            if local_path == Path(CHECKPOINT_PATH):
-                _strip_checkpoint_hparams(local_path)
-            print(f"✅ File already exists locally: {local_path}")
-            continue
+        if not local_path.exists():
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            downloaded = False
+            if s3_client:
+                try:
+                    print(f"⬇️ Downloading '{minio_key}' from MinIO...")
+                    s3_client.download_file(
+                        MINIO_MODELS_BUCKET, minio_key, str(local_path))
+                    print(f"✅ Successfully downloaded {local_path} from MinIO")
+                    downloaded = True
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code")
+                    print(
+                        f"⚠️ MinIO download failed for '{minio_key}' (code={error_code}): {e}")
+                except Exception as e:
+                    print(
+                        f"⚠️ Unexpected error downloading '{minio_key}' from MinIO: {e}", file=sys.stderr)
 
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        downloaded = False
+            if not downloaded and fallback_url:
+                try:
+                    print(
+                        f"⬇️ Downloading '{minio_key}' from fallback URL: {fallback_url}")
+                    download_file(fallback_url, local_path)
+                    downloaded = True
+                    if s3_client:
+                        try:
+                            s3_client.upload_file(
+                                str(local_path), MINIO_MODELS_BUCKET, minio_key)
+                            print(
+                                f"✅ Seeded MinIO bucket '{MINIO_MODELS_BUCKET}' with '{minio_key}'")
+                        except Exception as e:
+                            print(
+                                f"⚠️ Warning: failed to upload '{minio_key}' to MinIO: {e}", file=sys.stderr)
+                except Exception as e:
+                    print(
+                        f"❌ ERROR: Failed to download '{minio_key}' from fallback: {e}", file=sys.stderr)
 
-        if s3_client:
-            try:
+            if not downloaded:
                 print(
-                    f"⬇️ File not found locally. Downloading '{minio_key}' from MinIO..."
-                )
-                s3_client.download_file(
-                    MINIO_MODELS_BUCKET, minio_key, str(local_path)
-                )
-                print(f"✅ Successfully downloaded {local_path} from MinIO")
-                downloaded = True
-                if local_path.suffix.lower() in {".yaml", ".yml"}:
-                    normalise_boolean_mode_fields(local_path)
-                if local_path == Path(CHECKPOINT_PATH):
-                    _strip_checkpoint_hparams(local_path)
-            except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code")
-                print(
-                    f"⚠️ MinIO download failed for '{minio_key}' (code={error_code}): {e}"
-                )
-            except Exception as e:
-                print(
-                    f"⚠️ Unexpected error downloading '{minio_key}' from MinIO: {e}",
-                    file=sys.stderr,
-                )
+                    f"❌ ERROR: Required model asset '{minio_key}' is unavailable.", file=sys.stderr)
+                sys.exit(1)
+            else:
+                # Apply patch immediately after download
+                print(f"Applying patch to newly downloaded file: {local_path}")
+                patch_func(local_path)
+                print(f"✅ File ready: {local_path}")
 
-        if not downloaded and fallback_url:
-            try:
-                print(
-                    f"⬇️ Downloading '{minio_key}' from fallback URL: {fallback_url}"
-                )
-                download_file(fallback_url, local_path)
-                downloaded = True
-                if local_path.suffix.lower() in {".yaml", ".yml"}:
-                    normalise_boolean_mode_fields(local_path)
-                if local_path == Path(CHECKPOINT_PATH):
-                    _strip_checkpoint_hparams(local_path)
-                if s3_client:
-                    try:
-                        s3_client.upload_file(
-                            str(local_path), MINIO_MODELS_BUCKET, minio_key
-                        )
-                        print(
-                            f"✅ Seeded MinIO bucket '{MINIO_MODELS_BUCKET}' with '{minio_key}'"
-                        )
-                    except Exception as e:
-                        print(
-                            f"⚠️ Warning: failed to upload '{minio_key}' to MinIO: {e}",
-                            file=sys.stderr,
-                        )
-            except Exception as e:
-                print(
-                    f"❌ ERROR: Failed to download '{minio_key}' from fallback: {e}",
-                    file=sys.stderr,
-                )
+        else:
+            # --- ALWAYS APPLY PATCH ---
+            print(f"File already exists locally, applying patch: {local_path}")
+            patch_func(local_path)
+            # --- END CHANGE ---
 
-        if not downloaded:
-            print(
-                f"❌ ERROR: Required model asset '{minio_key}' is unavailable.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
+# --- END MODIFIED FUNCTION ---
 
 
 def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: str) -> str:
     """
-    Runs terratorch inference on a TIFF file. (Copied from your main.py)
+    Runs terratorch inference on a TIFF file.
     """
     predict_script = "terratorch"
     accelerator = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -648,59 +671,65 @@ def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: st
         "--trainer.devices=1",
         "--data.init_args.batch_size=1",
         "--trainer.default_root_dir=/app/data",
+        # --- REMOVED: "--trainer.enable_checkpointing=false" ---
+        # This is handled by the injected config patch now
     ]
 
     print(f"\nExecuting command: {' '.join(command)}")
     try:
-        # Using subprocess.run for simplicity as we wait for it to complete
         result = subprocess.run(
             command,
             cwd=PROJECT_CODE_DIR,
             capture_output=True,
             text=True,
-            check=True,  # This will raise an exception on non-zero exit codes
+            check=True,
             env=os.environ.copy()
         )
         print("STDOUT:", result.stdout)
         print("STDERR:", result.stderr)
-        print("\nTerratorch predict command finished successfully.")
+        print("\n✅ Terratorch predict command finished successfully.")
 
         base_name = Path(input_filename).stem
         expected_output_filename = f"{base_name}_pred.tif"
         output_filepath = Path(output_dir) / expected_output_filename
 
         if not output_filepath.exists():
+            # --- Check common output variation ---
+            # Sometimes _pred is omitted
+            variation_filename = f"{base_name}.tif"
+            variation_filepath = Path(output_dir) / variation_filename
+            if variation_filepath.exists():
+                print(
+                    f"ℹ️ Found output file without '_pred' suffix: {variation_filepath}")
+                return str(variation_filepath)
+            # --- End check ---
             raise FileNotFoundError(
-                f"Inference finished, but output file '{output_filepath}' was not found.")
+                f"Inference finished, but expected output file '{output_filepath}' (or variation) was not found.")
 
         return str(output_filepath)
 
     except subprocess.CalledProcessError as e:
         print(
-            f"Terratorch predict command failed with exit code {e.returncode}.", file=sys.stderr)
+            f"❌ Terratorch predict command failed with exit code {e.returncode}.", file=sys.stderr)
         print("STDOUT:", e.stdout)
         print("STDERR:", e.stderr)
+        # Attempt to extract a more specific error from stderr if possible
+        stderr_lines = e.stderr.strip().split('\n')
+        last_line = stderr_lines[-1] if stderr_lines else "Unknown error"
         raise gr.Error(
-            f"Model inference failed. Check logs for details. STDERR: {e.stderr}")
+            f"Model inference failed. Check logs. Last error line: {last_line}")
     except Exception as e:
-        print(f"An error occurred during inference: {e}", file=sys.stderr)
-        raise gr.Error(f"An unexpected error occurred: {e}")
+        print(f"❌ An error occurred during inference: {e}", file=sys.stderr)
+        raise gr.Error(f"An unexpected error occurred during inference: {e}")
 
 
 def detect_flood_from_url(image_url: str) -> str:
     """
     Performs flood detection on a GeoTIFF image provided via a URL.
-
-    Args:
-        image_url (str): A public URL pointing to a GeoTIFF image.
-
-    Returns:
-        str: A presigned URL to the resulting prediction image in MinIO.
     """
     if not image_url:
         raise gr.Error("Input is empty. Please provide a URL to a TIFF image.")
 
-    # Create a temporary directory for processing this request
     temp_dir = tempfile.mkdtemp(prefix="flood_detect_url_")
 
     try:
@@ -710,10 +739,9 @@ def detect_flood_from_url(image_url: str) -> str:
         input_dir.mkdir()
         output_dir.mkdir()
 
-        # Download the image from the URL
         print(f"Downloading image from: {image_url}")
         response = requests.get(image_url, stream=True)
-        response.raise_for_status()  # Raise an exception for bad status codes
+        response.raise_for_status()
 
         url_path = image_url.split('?')[0]
         original_filename = url_path.split('/')[-1]
@@ -726,17 +754,12 @@ def detect_flood_from_url(image_url: str) -> str:
 
         print(f"Input file saved to: {input_filepath}")
 
-        # Run the inference
         output_filepath = run_terratorch_inference(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
             input_filename=input_filename
         )
 
-        if not output_filepath:
-            raise gr.Error("Inference failed to produce an output file.")
-
-        # Upload to MinIO and get the URL
         minio_url = upload_to_minio(
             output_filepath, Path(output_filepath).name)
         return minio_url
@@ -747,17 +770,16 @@ def detect_flood_from_url(image_url: str) -> str:
     except Exception as e:
         print(f"An error occurred: {e}")
         raise gr.Error(str(e))
+    # --- Ensure temporary directory cleanup ---
+    # finally:
+    #     if 'temp_dir_path' in locals() and temp_dir_path.exists():
+    #          shutil.rmtree(temp_dir_path)
+    #          print(f"Cleaned up temporary directory: {temp_dir_path}")
 
 
 def detect_flood_from_file(temp_file) -> str:
     """
     Performs flood detection on a directly uploaded GeoTIFF file.
-
-    Args:
-        temp_file: The temporary file object from Gradio's File component.
-
-    Returns:
-        str: A presigned URL to the resulting prediction image in MinIO.
     """
     if temp_file is None:
         raise gr.Error("No file uploaded. Please upload a TIFF image.")
@@ -765,31 +787,21 @@ def detect_flood_from_file(temp_file) -> str:
     input_filepath = Path(temp_file.name)
     print(f"Processing uploaded file: {input_filepath}")
 
-    # Create a temporary directory for the output
     temp_dir = tempfile.mkdtemp(prefix="flood_detect_file_")
 
     try:
         temp_dir_path = Path(temp_dir)
-        # The input directory is simply the directory of the uploaded file
         input_dir = str(input_filepath.parent)
-        # The output will be in our new temporary directory
         output_dir = str(temp_dir_path / "output")
         Path(output_dir).mkdir()
-
-        # The filename is the name of the uploaded file
         input_filename = input_filepath.name
 
-        # Run the inference
         output_filepath = run_terratorch_inference(
             input_dir=input_dir,
             output_dir=output_dir,
             input_filename=input_filename
         )
 
-        if not output_filepath:
-            raise gr.Error("Inference failed to produce an output file.")
-
-        # Upload to MinIO and get the URL
         minio_url = upload_to_minio(
             output_filepath, Path(output_filepath).name)
         return minio_url
@@ -797,6 +809,11 @@ def detect_flood_from_file(temp_file) -> str:
     except Exception as e:
         print(f"An error occurred: {e}")
         raise gr.Error(str(e))
+    # --- Ensure temporary directory cleanup ---
+    # finally:
+    #     if 'temp_dir_path' in locals() and temp_dir_path.exists():
+    #          shutil.rmtree(temp_dir_path)
+    #          print(f"Cleaned up temporary directory: {temp_dir_path}")
 
 
 def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[float, int, str, datetime]) -> str:
@@ -807,6 +824,7 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[
     if not bbox_str or not analysis_date_timestamp:
         raise gr.Error("Bounding Box and Analysis Date must be provided.")
 
+    temp_dir = None  # Initialize outside try block for finally clause
     try:
         # 1. Parse Inputs from Gradio UI
         try:
@@ -821,7 +839,7 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[
                 "Bounding Box must have 4 comma-separated values: min_lon, min_lat, max_lon, max_lat")
         bbox = tuple(bbox_parts)
 
-        # 2. Fetch the satellite image from Sentinel Hub using our working approach
+        # 2. Fetch the satellite image
         print(
             f"Fetching Sentinel Hub image for BBox: {bbox} on {analysis_date.isoformat()}")
         tiff_data_bytes = fetch_sentinel_image(bbox, analysis_date)
@@ -829,8 +847,7 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[
             raise gr.Error(
                 "Failed to fetch data from Sentinel Hub. The area might be cloudy or no data is available.")
 
-        # 3. Save the fetched TIFF to a temporary directory
-        # Terratorch needs a file path to read from.
+        # 3. Save the fetched TIFF
         temp_dir = tempfile.mkdtemp(prefix="sentinel_flood_")
         temp_dir_path = Path(temp_dir)
         input_dir = temp_dir_path / "input"
@@ -844,7 +861,7 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[
             f.write(tiff_data_bytes)
         print(f"Sentinel TIFF saved to temporary file: {input_filepath}")
 
-        # 4. Run Terratorch inference on the saved file
+        # 4. Run Terratorch inference
         output_filepath = run_terratorch_inference(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
@@ -859,14 +876,23 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[
 
     except Exception as e:
         print(f"An error occurred during the process: {e}", file=sys.stderr)
-        raise gr.Error(str(e))
+        # --- Make error more specific if possible ---
+        if isinstance(e, gr.Error):
+            raise e  # Re-raise Gradio errors directly
+        else:
+            raise gr.Error(
+                f"An unexpected error occurred: {type(e).__name__} - {e}")
+    # --- Ensure temporary directory cleanup ---
+    # finally:
+    #     if temp_dir and Path(temp_dir).exists():
+    #          shutil.rmtree(temp_dir)
+    #          print(f"Cleaned up temporary directory: {temp_dir}")
 
 
 class FloodDetectionRequest(BaseModel):
     bbox_str: str
     analysis_date_timestamp: Union[float, int, str] = Field(
         ..., description="Unix timestamp (seconds) or ISO datetime string")
-    # accepted but ignored; useful for workflow chaining
     backend_url: Optional[str] = None
 
     def resolved_timestamp(self) -> float:
@@ -877,30 +903,22 @@ class FloodDetectionRequest(BaseModel):
                 f"Invalid analysis_date_timestamp: {self.analysis_date_timestamp}"
             ) from exc
 
-
 # --- Create the Gradio Interface ---
 
 
-# Define the interface for URL input
 interface_url = gr.Interface(
     fn=detect_flood_from_url,
     inputs=gr.Textbox(
-        lines=1,
-        placeholder="https://path/to/your/satellite_image.tif",
-        label="Image URL"
-    ),
+        lines=1, placeholder="https://path/to/your/satellite_image.tif", label="Image URL"),
     outputs=gr.Textbox(label="MinIO Result URL"),
     title="💧 Flood Detection from URL 🌊",
     description="Provide a public URL to a GeoTIFF image to run flood detection."
 )
 
-# Define the interface for file upload
 interface_file = gr.Interface(
     fn=detect_flood_from_file,
-    inputs=gr.File(
-        label="Upload GeoTIFF Image",
-        file_types=[".tif", ".tiff"]
-    ),
+    inputs=gr.File(label="Upload GeoTIFF Image",
+                   file_types=[".tif", ".tiff"]),
     outputs=gr.Textbox(label="MinIO Result URL"),
     title="💧 Flood Detection from File Upload 🌊",
     description="Upload a GeoTIFF image directly to run flood detection."
@@ -922,7 +940,6 @@ inferface_coordinates_datetime = gr.Interface(
     title="🛰️ Automated Flood Detection from Satellite Imagery 🌊",
     description="Provide a bounding box and datetime. The service will fetch the corresponding Sentinel-2 satellite image, run it through the flood detection model, and return a link to the prediction map.",
     examples=[
-        # Example over Leeds, UK
         ["-1.57, 53.80, -1.50, 53.83",
             datetime(2025, 1, 10).strftime(DEFAULT_DATETIME_FORMAT)],
         ["28.85, 40.97, 28.90, 41.00", datetime(
@@ -931,7 +948,6 @@ inferface_coordinates_datetime = gr.Interface(
     flagging_mode="never"
 )
 
-# Combine them into a single app with tabs
 demo = gr.TabbedInterface(
     [interface_url, interface_file, inferface_coordinates_datetime],
     ["From URL", "From File Upload", "From Coordinates and Date"]
@@ -960,14 +976,10 @@ async def detect_flood_from_coordinates(request: FloodDetectionRequest):
 
 app = gr.mount_gradio_app(api_app, demo, path="/")
 
-# Launch the interface
 if __name__ == "__main__":
     ensure_files_exist()
 
-    # Read root_path from an environment variable.
-    # This tells Gradio what its public-facing path is.
     root_path = os.environ.get("GRADIO_ROOT_PATH", "/")
-
     print(f"🚀 Launching Uvicorn with root_path: {root_path}")
 
     uvicorn.run(
