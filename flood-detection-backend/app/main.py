@@ -235,7 +235,6 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
                         "monitor": "val/loss",  # This value doesn't matter, but must be valid
                         "mode": "min",         # This is the critical fix
                         "save_top_k": 0,       # Don't save anything
-                        "enable_checkpointing": False
                     }
                 })
                 callbacks_changed = True
