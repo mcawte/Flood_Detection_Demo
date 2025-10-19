@@ -41,7 +41,8 @@ MINIO_SECRET_KEY = os.environ.get('MINIO_SECRET_KEY')
 MINIO_BUCKET = os.environ.get('MINIO_PREDICTIONS_BUCKET', 'flood-predictions')
 MINIO_MODELS_BUCKET = os.environ.get('MINIO_MODELS_BUCKET', 'flood-models')
 MINIO_REGION = os.environ.get('MINIO_REGION', 'us-east-1')
-MINIO_VERIFY_SSL = os.environ.get('MINIO_VERIFY_SSL', 'false').lower() in {'1', 'true', 'yes'}
+MINIO_VERIFY_SSL = os.environ.get('MINIO_VERIFY_SSL', 'false').lower() in {
+    '1', 'true', 'yes'}
 
 MODEL_CHECKPOINT_FALLBACK_URL = os.environ.get(
     "MODEL_CHECKPOINT_FALLBACK_URL",
@@ -64,7 +65,8 @@ SH_CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 DEFAULT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 _MONITOR_MIN_KEYWORDS = ("loss", "error", "mae", "rmse", "mse")
-_MONITOR_MAX_KEYWORDS = ("acc", "accuracy", "precision", "recall", "f1", "iou", "dice")
+_MONITOR_MAX_KEYWORDS = ("acc", "accuracy", "precision",
+                         "recall", "f1", "iou", "dice")
 
 
 def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
@@ -90,7 +92,7 @@ def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
     patched = False
     for key in ("hyper_parameters", "hparams", "hyperparameters"):
         if key in checkpoint:
-            checkpoint.pop(key, None) # Use .pop() to guarantee removal
+            checkpoint.pop(key, None)  # Use .pop() to guarantee removal
             patched = True
     # --- END FIX ---
 
@@ -175,7 +177,8 @@ def _fallback_mode_text_replace(raw_text: str, config_path: Path) -> None:
         updated = updated.replace(src, dst)
     if updated != raw_text:
         config_path.write_text(updated)
-        print(f"ℹ️ Normalised boolean mode fields in {config_path} (text replace)")
+        print(
+            f"ℹ️ Normalised boolean mode fields in {config_path} (text replace)")
 
 
 # --- THIS ENTIRE FUNCTION IS REPLACED ---
@@ -216,7 +219,7 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
     # This is the override for the terratorch `mode: True` bug.
     # We inject a valid ModelCheckpoint config to prevent terratorch
     # from injecting its own buggy, hard-coded one.
-    
+
     callbacks_changed = False
     if "trainer" in parsed and "callbacks" in parsed["trainer"]:
         callbacks = parsed["trainer"].get("callbacks")
@@ -226,9 +229,10 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
                 if isinstance(cb, dict) and "ModelCheckpoint" in cb.get("class_path", ""):
                     found_checkpoint = True
                     break
-            
+
             if not found_checkpoint:
-                print("ℹ️ Injecting valid ModelCheckpoint config to override terratorch bug.")
+                print(
+                    "ℹ️ Injecting valid ModelCheckpoint config to override terratorch bug.")
                 callbacks.append({
                     "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
                     "init_args": {
@@ -243,7 +247,7 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
     # Now, run the original logic to fix any other 'mode: True' issues
     nodes_changed = _normalise_mode_nodes(parsed)
 
-    if nodes_changed or callbacks_changed: # Check if *either* change happened
+    if nodes_changed or callbacks_changed:  # Check if *either* change happened
         config_path.write_text(yaml.safe_dump(parsed, sort_keys=False))
         print(f"ℹ️ Patched and saved config file: {config_path}")
 # --- END REPLACED FUNCTION ---
@@ -540,7 +544,8 @@ def ensure_files_exist():
                 verify=MINIO_VERIFY_SSL,
             )
         except Exception as e:
-            print(f"⚠️ WARNING: Failed to create MinIO client: {e}", file=sys.stderr)
+            print(
+                f"⚠️ WARNING: Failed to create MinIO client: {e}", file=sys.stderr)
     else:
         print(
             "WARNING: MinIO credentials not found. Falling back to external downloads where available."
@@ -643,7 +648,6 @@ def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: st
         "--trainer.devices=1",
         "--data.init_args.batch_size=1",
         "--trainer.default_root_dir=/app/data",
-        "--trainer.enable_checkpointing=false"
     ]
 
     print(f"\nExecuting command: {' '.join(command)}")
@@ -860,8 +864,10 @@ def fetch_and_run_flood_detection(bbox_str: str, analysis_date_timestamp: Union[
 
 class FloodDetectionRequest(BaseModel):
     bbox_str: str
-    analysis_date_timestamp: Union[float, int, str] = Field(..., description="Unix timestamp (seconds) or ISO datetime string")
-    backend_url: Optional[str] = None  # accepted but ignored; useful for workflow chaining
+    analysis_date_timestamp: Union[float, int, str] = Field(
+        ..., description="Unix timestamp (seconds) or ISO datetime string")
+    # accepted but ignored; useful for workflow chaining
+    backend_url: Optional[str] = None
 
     def resolved_timestamp(self) -> float:
         try:
@@ -917,8 +923,10 @@ inferface_coordinates_datetime = gr.Interface(
     description="Provide a bounding box and datetime. The service will fetch the corresponding Sentinel-2 satellite image, run it through the flood detection model, and return a link to the prediction map.",
     examples=[
         # Example over Leeds, UK
-        ["-1.57, 53.80, -1.50, 53.83", datetime(2025, 1, 10).strftime(DEFAULT_DATETIME_FORMAT)],
-        ["28.85, 40.97, 28.90, 41.00", datetime(2025, 7, 17, 15, 30).strftime(DEFAULT_DATETIME_FORMAT)]
+        ["-1.57, 53.80, -1.50, 53.83",
+            datetime(2025, 1, 10).strftime(DEFAULT_DATETIME_FORMAT)],
+        ["28.85, 40.97, 28.90, 41.00", datetime(
+            2025, 7, 17, 15, 30).strftime(DEFAULT_DATETIME_FORMAT)]
     ],
     flagging_mode="never"
 )
@@ -955,16 +963,16 @@ app = gr.mount_gradio_app(api_app, demo, path="/")
 # Launch the interface
 if __name__ == "__main__":
     ensure_files_exist()
-    
+
     # Read root_path from an environment variable.
     # This tells Gradio what its public-facing path is.
     root_path = os.environ.get("GRADIO_ROOT_PATH", "/")
-    
+
     print(f"🚀 Launching Uvicorn with root_path: {root_path}")
-    
+
     uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=8080, 
+        app,
+        host="0.0.0.0",
+        port=8080,
         root_path=root_path
     )
