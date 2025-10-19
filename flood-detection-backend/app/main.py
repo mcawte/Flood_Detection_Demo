@@ -18,7 +18,7 @@ from rasterio.transform import from_bounds
 import io
 from sentinelhub import SHConfig, BBox, CRS, DataCollection, SentinelHubRequest, MimeType
 from datetime import datetime, timedelta
-import unicorn
+import uvicorn
 
 try:
     import yaml
@@ -916,6 +916,5 @@ app = gr.mount_gradio_app(api_app, demo, path="/")
 
 # Launch the interface
 if __name__ == "__main__":
-    import uvicorn
     ensure_files_exist()
     uvicorn.run(app, host="0.0.0.0", port=8080, root_path="/")
