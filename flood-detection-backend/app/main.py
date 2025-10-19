@@ -58,6 +58,48 @@ SH_CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 DEFAULT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
+def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
+    """
+    Remove stale Lightning hyper-parameter metadata from a checkpoint file.
+    This prevents Terratorch CLI from re-injecting incompatible config keys.
+    """
+    if not checkpoint_path.exists():
+        return
+
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(
+            f"⚠️ Unable to load checkpoint for sanitising ({checkpoint_path}): {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    patched = False
+    for key in ("hyper_parameters", "hparams", "hyperparameters"):
+        if key in checkpoint and checkpoint[key]:
+            checkpoint[key] = {}
+            patched = True
+
+    if not patched:
+        return
+
+    tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+    try:
+        torch.save(checkpoint, tmp_path)
+        tmp_path.replace(checkpoint_path)
+        print(f"ℹ️ Stripped Lightning hyperparameters from {checkpoint_path}")
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(
+            f"⚠️ Failed to write patched checkpoint {checkpoint_path}: {exc}",
+            file=sys.stderr,
+        )
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def upload_to_minio(file_path: str, object_name: str) -> str:
     """
     Upload a file to MinIO storage.
@@ -360,6 +402,8 @@ def ensure_files_exist():
         fallback_url = meta["fallback"]
 
         if local_path.exists():
+            if local_path == Path(CHECKPOINT_PATH):
+                _strip_checkpoint_hparams(local_path)
             print(f"✅ File already exists locally: {local_path}")
             continue
 
@@ -376,6 +420,8 @@ def ensure_files_exist():
                 )
                 print(f"✅ Successfully downloaded {local_path} from MinIO")
                 downloaded = True
+                if local_path == Path(CHECKPOINT_PATH):
+                    _strip_checkpoint_hparams(local_path)
             except ClientError as e:
                 error_code = e.response.get("Error", {}).get("Code")
                 print(
@@ -394,6 +440,8 @@ def ensure_files_exist():
                 )
                 download_file(fallback_url, local_path)
                 downloaded = True
+                if local_path == Path(CHECKPOINT_PATH):
+                    _strip_checkpoint_hparams(local_path)
                 if s3_client:
                     try:
                         s3_client.upload_file(
