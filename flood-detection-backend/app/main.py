@@ -87,7 +87,7 @@ def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
     patched = False
     for key in ("hyper_parameters", "hparams", "hyperparameters"):
         if key in checkpoint and checkpoint[key]:
-            checkpoint[key] = {}
+            checkpoint.pop(key)
             patched = True
 
     if not patched:
