@@ -84,11 +84,15 @@ def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
         )
         return
 
+    # --- THIS BLOCK IS FIXED ---
+    # We remove 'and checkpoint[key]' to ensure the key is popped
+    # even if it's an empty dict, which evaluates to False.
     patched = False
     for key in ("hyper_parameters", "hparams", "hyperparameters"):
-        if key in checkpoint and checkpoint[key]:
-            checkpoint.pop(key)
+        if key in checkpoint:
+            checkpoint.pop(key, None) # Use .pop() to guarantee removal
             patched = True
+    # --- END FIX ---
 
     if not patched:
         return
@@ -174,9 +178,11 @@ def _fallback_mode_text_replace(raw_text: str, config_path: Path) -> None:
         print(f"ℹ️ Normalised boolean mode fields in {config_path} (text replace)")
 
 
+# --- THIS ENTIRE FUNCTION IS REPLACED ---
 def normalise_boolean_mode_fields(config_path: Path) -> None:
     """
     Ensure Lightning callback/scheduler `mode` parameters are valid strings.
+    ** ALSO: Injects a valid ModelCheckpoint to override a terratorch bug. **
     """
     if config_path.suffix.lower() not in {".yaml", ".yml"}:
         return
@@ -206,9 +212,42 @@ def normalise_boolean_mode_fields(config_path: Path) -> None:
     if parsed is None:
         return
 
-    if _normalise_mode_nodes(parsed):
+    # --- BEGIN NEW LOGIC ---
+    # This is the override for the terratorch `mode: True` bug.
+    # We inject a valid ModelCheckpoint config to prevent terratorch
+    # from injecting its own buggy, hard-coded one.
+    
+    callbacks_changed = False
+    if "trainer" in parsed and "callbacks" in parsed["trainer"]:
+        callbacks = parsed["trainer"].get("callbacks")
+        if isinstance(callbacks, list):
+            found_checkpoint = False
+            for cb in callbacks:
+                if isinstance(cb, dict) and "ModelCheckpoint" in cb.get("class_path", ""):
+                    found_checkpoint = True
+                    break
+            
+            if not found_checkpoint:
+                print("ℹ️ Injecting valid ModelCheckpoint config to override terratorch bug.")
+                callbacks.append({
+                    "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
+                    "init_args": {
+                        "monitor": "val/loss",  # This value doesn't matter, but must be valid
+                        "mode": "min",         # This is the critical fix
+                        "save_top_k": 0,       # Don't save anything
+                        "enable_checkpointing": False
+                    }
+                })
+                callbacks_changed = True
+    # --- END NEW LOGIC ---
+
+    # Now, run the original logic to fix any other 'mode: True' issues
+    nodes_changed = _normalise_mode_nodes(parsed)
+
+    if nodes_changed or callbacks_changed: # Check if *either* change happened
         config_path.write_text(yaml.safe_dump(parsed, sort_keys=False))
-        print(f"ℹ️ Normalised boolean mode fields in {config_path}")
+        print(f"ℹ️ Patched and saved config file: {config_path}")
+# --- END REPLACED FUNCTION ---
 
 
 def upload_to_minio(file_path: str, object_name: str) -> str:
@@ -899,7 +938,7 @@ async def healthcheck():
     return {"status": "ok"}
 
 
-@api_app.post("/detect_flood_from_coordinates")
+@api_g.post("/detect_flood_from_coordinates")
 async def detect_flood_from_coordinates(request: FloodDetectionRequest):
     try:
         result_url = fetch_and_run_flood_detection(
@@ -917,4 +956,16 @@ app = gr.mount_gradio_app(api_app, demo, path="/")
 # Launch the interface
 if __name__ == "__main__":
     ensure_files_exist()
-    uvicorn.run(app, host="0.0.0.0", port=8080, root_path="/")
+    
+    # Read root_path from an environment variable.
+    # This tells Gradio what its public-facing path is.
+    root_path = os.environ.get("GRADIO_ROOT_PATH", "/")
+    
+    print(f"🚀 Launching Uvicorn with root_path: {root_path}")
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8080, 
+        root_path=root_path
+    )
