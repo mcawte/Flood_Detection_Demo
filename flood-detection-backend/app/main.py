@@ -671,6 +671,7 @@ def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: st
         "--trainer.devices=1",
         "--data.init_args.batch_size=1",
         "--trainer.default_root_dir=/app/data",
+        "--trainer.callbacks=null"
         # --- REMOVED: "--trainer.enable_checkpointing=false" ---
         # This is handled by the injected config patch now
     ]
