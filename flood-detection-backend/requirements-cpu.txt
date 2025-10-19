@@ -1,8 +1,7 @@
-torch==2.5.0
-torchvision==0.20.1
+torch==2.1.0
+torchvision==0.16.0
 terratorch @ git+https://github.com/IBM/terratorch.git@6d97521
 lightning-utilities==0.11.3.post
-pytorch-lightning==2.1.1
 albumentations==1.4.3
 huggingface_hub
 jupyter
