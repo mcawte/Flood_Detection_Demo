@@ -5,7 +5,7 @@ import requests
 # import shutil
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import Optional, Union
+from typing import Any, Optional, Union
 import subprocess
 from pathlib import Path
 import torch
@@ -18,6 +18,11 @@ from rasterio.transform import from_bounds
 import io
 from sentinelhub import SHConfig, BBox, CRS, DataCollection, SentinelHubRequest, MimeType
 from datetime import datetime, timedelta
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - runtime fallback
+    yaml = None  # type: ignore[assignment]
 
 from model_paths import (
     CONFIG_PATH,
@@ -56,6 +61,9 @@ SH_CLIENT_ID = os.environ.get("SH_CLIENT_ID")
 SH_CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 
 DEFAULT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+_MONITOR_MIN_KEYWORDS = ("loss", "error", "mae", "rmse", "mse")
+_MONITOR_MAX_KEYWORDS = ("acc", "accuracy", "precision", "recall", "f1", "iou", "dice")
 
 
 def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
@@ -98,6 +106,108 @@ def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
             tmp_path.unlink()
         except FileNotFoundError:
             pass
+
+
+def _select_mode_value(raw_mode: Any, monitor: Any) -> Any:
+    """
+    Translate legacy boolean/string mode flags into the allowed 'min'/'max' values.
+    """
+    if isinstance(raw_mode, str):
+        lowered = raw_mode.strip().lower()
+        if lowered in {"min", "max"}:
+            return lowered
+        if lowered in {"true", "false"}:
+            raw_mode = lowered == "true"
+        else:
+            return raw_mode
+
+    if isinstance(raw_mode, bool):
+        bool_value = raw_mode
+    else:
+        bool_value = True
+
+    if isinstance(monitor, str):
+        monitor_lower = monitor.lower()
+        if any(token in monitor_lower for token in _MONITOR_MIN_KEYWORDS):
+            return "min"
+        if any(token in monitor_lower for token in _MONITOR_MAX_KEYWORDS):
+            return "max"
+
+    return "max" if bool_value else "min"
+
+
+def _normalise_mode_nodes(node: Any) -> bool:
+    """
+    Recursively walk the parsed YAML and normalise any boolean mode fields.
+    """
+    changed = False
+    if isinstance(node, dict):
+        monitor = node.get("monitor")
+        if "mode" in node:
+            new_mode = _select_mode_value(node["mode"], monitor)
+            if new_mode != node["mode"]:
+                node["mode"] = new_mode
+                changed = True
+        for value in node.values():
+            if _normalise_mode_nodes(value):
+                changed = True
+    elif isinstance(node, list):
+        for item in node:
+            if _normalise_mode_nodes(item):
+                changed = True
+    return changed
+
+
+def _fallback_mode_text_replace(raw_text: str, config_path: Path) -> None:
+    replacements = {
+        "mode: True": "mode: max",
+        "mode: true": "mode: max",
+        "mode: False": "mode: min",
+        "mode: false": "mode: min",
+    }
+    updated = raw_text
+    for src, dst in replacements.items():
+        updated = updated.replace(src, dst)
+    if updated != raw_text:
+        config_path.write_text(updated)
+        print(f"ℹ️ Normalised boolean mode fields in {config_path} (text replace)")
+
+
+def normalise_boolean_mode_fields(config_path: Path) -> None:
+    """
+    Ensure Lightning callback/scheduler `mode` parameters are valid strings.
+    """
+    if config_path.suffix.lower() not in {".yaml", ".yml"}:
+        return
+
+    try:
+        raw_text = config_path.read_text()
+    except FileNotFoundError:
+        return
+
+    if not raw_text.strip():
+        return
+
+    if yaml is None:
+        _fallback_mode_text_replace(raw_text, config_path)
+        return
+
+    try:
+        parsed = yaml.safe_load(raw_text)
+    except Exception as exc:  # pragma: no cover - defensive logging
+        print(
+            f"⚠️ Failed to parse YAML config at {config_path}: {exc}. Falling back to text replacement.",
+            file=sys.stderr,
+        )
+        _fallback_mode_text_replace(raw_text, config_path)
+        return
+
+    if parsed is None:
+        return
+
+    if _normalise_mode_nodes(parsed):
+        config_path.write_text(yaml.safe_dump(parsed, sort_keys=False))
+        print(f"ℹ️ Normalised boolean mode fields in {config_path}")
 
 
 def upload_to_minio(file_path: str, object_name: str) -> str:
@@ -402,6 +512,8 @@ def ensure_files_exist():
         fallback_url = meta["fallback"]
 
         if local_path.exists():
+            if local_path.suffix.lower() in {".yaml", ".yml"}:
+                normalise_boolean_mode_fields(local_path)
             if local_path == Path(CHECKPOINT_PATH):
                 _strip_checkpoint_hparams(local_path)
             print(f"✅ File already exists locally: {local_path}")
@@ -420,6 +532,8 @@ def ensure_files_exist():
                 )
                 print(f"✅ Successfully downloaded {local_path} from MinIO")
                 downloaded = True
+                if local_path.suffix.lower() in {".yaml", ".yml"}:
+                    normalise_boolean_mode_fields(local_path)
                 if local_path == Path(CHECKPOINT_PATH):
                     _strip_checkpoint_hparams(local_path)
             except ClientError as e:
@@ -440,6 +554,8 @@ def ensure_files_exist():
                 )
                 download_file(fallback_url, local_path)
                 downloaded = True
+                if local_path.suffix.lower() in {".yaml", ".yml"}:
+                    normalise_boolean_mode_fields(local_path)
                 if local_path == Path(CHECKPOINT_PATH):
                     _strip_checkpoint_hparams(local_path)
                 if s3_client:
