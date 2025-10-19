@@ -106,13 +106,9 @@ objects:
       app: flood-detection-backend
       deploymentconfig: flood-detection-backend
     strategy:
-      type: Rolling
-      rollingParams:
-        updatePeriodSeconds: 1
-        intervalSeconds: 1
+      type: Recreate
+      recreateParams:
         timeoutSeconds: 600
-        maxUnavailable: 25%
-        maxSurge: 25%
     template:
       metadata:
         labels:
