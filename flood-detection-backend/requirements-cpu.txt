@@ -3,7 +3,7 @@ torchvision==0.16.0
 terratorch @ git+https://github.com/IBM/terratorch.git@6d97521
 pytorch-lightning==1.9.5
 albumentations==1.4.3
-huggingface_hub==0.21.4
+huggingface_hub==0.28.1
 jupyter==1.0.0
 matplotlib==3.8.0
 imagecodecs==2024.1.1
