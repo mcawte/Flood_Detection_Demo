@@ -1,5 +1,5 @@
-torch==2.1.0
-torchvision==0.16.0
+torch==2.5.0
+torchvision==0.20.1
 terratorch @ git+https://github.com/IBM/terratorch.git@6d97521
 lightning-utilities==0.11.3.post
 pytorch-lightning==2.1.1

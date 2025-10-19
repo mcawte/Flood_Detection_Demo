@@ -13,7 +13,7 @@ COPY requirements-backend.txt constraints-backend.txt /tmp/pip/
 
 # Install Python dependencies with pinned versions
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.1.0 torchvision==0.16.0 && \
+    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.5.0 torchvision==0.20.1 && \
     pip3 install --no-cache-dir numpy==1.26.4 cython==3.0.12 && \
     pip3 install --no-cache-dir --no-build-isolation "rasterio>=1.3,<1.4" && \
     pip3 install --no-cache-dir --upgrade-strategy only-if-needed -r /tmp/pip/requirements-backend.txt -c /tmp/pip/constraints-backend.txt
