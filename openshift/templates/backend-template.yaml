@@ -147,6 +147,16 @@ objects:
               secretKeyRef:
                 name: flood-backend-secrets
                 key: sh-client-secret
+          - name: HOME
+            value: /app
+          - name: MPLCONFIGDIR
+            value: /app/.config/matplotlib
+          - name: SENTINELHUB_CONFIG_DIR
+            value: /app/.config/sentinelhub
+          - name: SENTINELHUB_CONFIG_PATH
+            value: /app/.config/sentinelhub/config.yaml
+          - name: SH_CONFIG_HOME
+            value: /app/.config
           envFrom:
           - configMapRef:
               name: flood-backend-config
@@ -162,6 +172,8 @@ objects:
             mountPath: /app/models
           - name: configs-storage
             mountPath: /app/configs
+          - name: runtime-config
+            mountPath: /app/.config
           livenessProbe:
             httpGet:
               path: /health
@@ -181,6 +193,8 @@ objects:
         - name: configs-storage
           persistentVolumeClaim:
             claimName: flood-backend-configs
+        - name: runtime-config
+          emptyDir: {}
         restartPolicy: Always
     triggers:
     - type: ConfigChange
