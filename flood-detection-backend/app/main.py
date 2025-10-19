@@ -938,7 +938,7 @@ async def healthcheck():
     return {"status": "ok"}
 
 
-@api_g.post("/detect_flood_from_coordinates")
+@api_app.post("/detect_flood_from_coordinates")
 async def detect_flood_from_coordinates(request: FloodDetectionRequest):
     try:
         result_url = fetch_and_run_flood_detection(
