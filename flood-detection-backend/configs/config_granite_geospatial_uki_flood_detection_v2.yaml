@@ -1,31 +1,33 @@
 # lightning.pytorch==2.1.1
 seed_everything: 0
 trainer:
-  accelerator: auto
+  accelerator: cpu
   strategy: auto
   devices: auto
   num_nodes: 1
-  logger: false
+  logger: True # will use tensorboardlogger
+
   callbacks:
-    - class_path: ModelCheckpoint
+    - class_path: LearningRateMonitor
+      init_args:
+        logging_interval: epoch
+    - class_path: EarlyStopping
       init_args:
         monitor: val/loss
-        mode: min
-        save_top_k: 1
-        save_last: true
-  max_epochs: 5
+        patience: 30
+
+  max_epochs: 200
   check_val_every_n_epoch: 1
   log_every_n_steps: 1
-  enable_checkpointing: true
-  default_root_dir: ./../data/fine_tuning/granite_geospatial_uki_flood_detection_v2
-
+  enable_checkpointing: false
+  default_root_dir: ./../data/fine_tuning/granite_geospatial_uki_flood_detection_v1
 data:
   class_path: GenericNonGeoSegmentationDataModule
   init_args:
-    batch_size: 4
-    num_workers: 1
+    batch_size: 1
+    num_workers: 0
     constant_scale: 0.0001
-    dataset_bands:
+    dataset_bands: # what bands are in your data
       - VV
       - VH
       - BLUE
@@ -35,7 +37,7 @@ data:
       - SWIR_1
       - SWIR_2
       - CLOUD
-    output_bands:
+    output_bands: # which bands do you want to fine-tune
       - BLUE
       - GREEN
       - RED
@@ -49,39 +51,41 @@ data:
       - 4
       - 3
       - 2
-    train_data_root: ./../data/regions/combined_uki_spain/images/
-    train_label_data_root: ./../data/regions/combined_uki_spain/labels/
-    val_data_root: ./../data/regions/combined_uki_spain/images/
-    val_label_data_root: ./../data/regions/combined_uki_spain/labels/
-    test_data_root: ./../data/regions/combined_uki_spain/images/
-    test_label_data_root: ./../data/regions/combined_uki_spain/labels/
-    train_split: ./../data/regions/combined_uki_spain/splits/flood_train_data.txt
-    test_split: ./../data/regions/combined_uki_spain/splits/flood_test_data.txt
-    val_split: ./../data/regions/combined_uki_spain/splits/flood_val_data.txt
+    train_data_root: ./../data/regions/uki/images/
+    train_label_data_root: ./../data/regions/uki/labels_without_cloud/
+    val_data_root: ./../data/regions/uki/images/
+    val_label_data_root: ./../data/regions/uki/labels_without_cloud/
+    test_data_root: ./../data/regions/uki/images/
+    test_label_data_root: ./../data/regions/uki/labels_without_cloud/
+    train_split: ./../data/regions/uki/splits/flood_train_data.txt
+    test_split: ./../data/regions/uki/splits/flood_test_data.txt
+    val_split: ./../data/regions/uki/splits/flood_val_data.txt
     img_grep: "*_image.tif"
     label_grep: "*_label.tif"
     no_label_replace: -1
     no_data_replace: 0
     means:
-      - 0.1290484133335582
-      - 0.13423481405157794
-      - 0.1328938801112928
-      - 0.20036851044035797
-      - 0.13804629743141042
-      - 0.10409700513471637
-      - -0.0018052691820029847
-      - -0.0023712696527645486
-      - 0.000024014472961425782
+      - 0.08867253281911215 # BLUE
+      - 0.09101736325581869 # GREEN
+      - 0.08757093732833862 # RED
+      - 0.1670982579167684 # NIR_NARROW
+      - 0.09420119639078776 # SWIR_1
+      - 0.07141083437601725 # SWIR_2
+      - -0.0017641318140774339 # VV
+      - -0.002356150351719506 # VH
+      - 0.00002777560551961263 # CLOUD
+
     stds:
-      - 0.25406999374272976
-      - 0.22949378991348005
-      - 0.21689414406289836
-      - 0.22552362238920548
-      - 0.1600542128720416
-      - 0.12602917719190815
-      - 0.0011294842635096356
-      - 0.0008879269711519241
-      - 0.00004271712050839232
+      - 0.13656951175974685
+      - 0.13202436625655786
+      - 0.1307223895526036
+      - 0.18946390520629108
+      - 0.11561659013865118
+      - 0.09351007561544347
+      - 0.001035692652952644
+      - 0.000864295592912648
+      - 0.00004478924301636066
+
     num_classes: 2
 
 model:
@@ -89,7 +93,7 @@ model:
   init_args:
     model_args:
       decoder: FCNDecoder
-      backbone_pretrained: true
+      backbone_pretrained: false
       backbone: granite_geospatial_uki
       backbone_pretrain_img_size: 512
       decoder_channels: 256
@@ -131,12 +135,6 @@ model:
     freeze_backbone: false
     freeze_decoder: false
     model_factory: EncoderDecoderFactory
-    tiled_inference_parameters:
-      h_crop: 512
-      h_stride: 496
-      w_crop: 512
-      w_stride: 496
-      average_patches: true
 optimizer:
   class_path: torch.optim.AdamW
   init_args:
