@@ -5,7 +5,7 @@ import requests
 # import shutil
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from typing import Any, Optional, Union
+from typing import Optional, Union
 import subprocess
 from pathlib import Path
 import torch
@@ -19,11 +19,6 @@ import io
 from sentinelhub import SHConfig, BBox, CRS, DataCollection, SentinelHubRequest, MimeType
 from datetime import datetime, timedelta
 import uvicorn
-
-try:
-    import yaml
-except ImportError:  # pragma: no cover - runtime fallback
-    yaml = None  # type: ignore[assignment]
 
 from model_paths import (
     CONFIG_PATH,
@@ -63,234 +58,6 @@ SH_CLIENT_ID = os.environ.get("SH_CLIENT_ID")
 SH_CLIENT_SECRET = os.environ.get("SH_CLIENT_SECRET")
 
 DEFAULT_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
-
-_MONITOR_MIN_KEYWORDS = ("loss", "error", "mae", "rmse", "mse")
-_MONITOR_MAX_KEYWORDS = ("acc", "accuracy", "precision",
-                         "recall", "f1", "iou", "dice")
-
-
-def _strip_checkpoint_hparams(checkpoint_path: Path) -> None:
-    """
-    Remove stale Lightning hyper-parameter metadata from a checkpoint file.
-    This prevents Terratorch CLI from re-injecting incompatible config keys.
-    """
-    if not checkpoint_path.exists():
-        return
-
-    try:
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    except Exception as exc:  # pragma: no cover - defensive logging
-        print(
-            f"⚠️ Unable to load checkpoint for sanitising ({checkpoint_path}): {exc}",
-            file=sys.stderr,
-        )
-        return
-
-    patched = False
-    for key in ("hyper_parameters", "hparams", "hyperparameters"):
-        if key in checkpoint:
-            checkpoint.pop(key, None)  # Use .pop() to guarantee removal
-            patched = True
-
-    if not patched:
-        # --- NEW: Print message even if no change needed ---
-        print(f"✅ Checkpoint hyperparameters already clean: {checkpoint_path}")
-        return
-
-    tmp_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
-    try:
-        torch.save(checkpoint, tmp_path)
-        tmp_path.replace(checkpoint_path)
-        print(f"ℹ️ Stripped Lightning hyperparameters from {checkpoint_path}")
-    except Exception as exc:  # pragma: no cover - defensive logging
-        print(
-            f"⚠️ Failed to write patched checkpoint {checkpoint_path}: {exc}",
-            file=sys.stderr,
-        )
-        try:
-            tmp_path.unlink()
-        except FileNotFoundError:
-            pass
-
-
-def _select_mode_value(raw_mode: Any, monitor: Any) -> Any:
-    """
-    Translate legacy boolean/string mode flags into the allowed 'min'/'max' values.
-    """
-    if isinstance(raw_mode, str):
-        lowered = raw_mode.strip().lower()
-        if lowered in {"min", "max"}:
-            return lowered
-        if lowered in {"true", "false"}:
-            raw_mode = lowered == "true"
-        else:
-            return raw_mode
-
-    if isinstance(raw_mode, bool):
-        bool_value = raw_mode
-    else:
-        bool_value = True
-
-    if isinstance(monitor, str):
-        monitor_lower = monitor.lower()
-        if any(token in monitor_lower for token in _MONITOR_MIN_KEYWORDS):
-            return "min"
-        if any(token in monitor_lower for token in _MONITOR_MAX_KEYWORDS):
-            return "max"
-
-    return "max" if bool_value else "min"
-
-
-def _normalise_mode_nodes(node: Any) -> bool:
-    """
-    Recursively walk the parsed YAML and normalise any boolean mode fields.
-    """
-    changed = False
-    if isinstance(node, dict):
-        monitor = node.get("monitor")
-        if "mode" in node:
-            new_mode = _select_mode_value(node["mode"], monitor)
-            if new_mode != node["mode"]:
-                node["mode"] = new_mode
-                changed = True
-        for value in node.values():
-            if _normalise_mode_nodes(value):
-                changed = True
-    elif isinstance(node, list):
-        for item in node:
-            if _normalise_mode_nodes(item):
-                changed = True
-    return changed
-
-
-def _fallback_mode_text_replace(raw_text: str, config_path: Path) -> None:
-    replacements = {
-        "mode: True": "mode: max",
-        "mode: true": "mode: max",
-        "mode: False": "mode: min",
-        "mode: false": "mode: min",
-    }
-    updated = raw_text
-    for src, dst in replacements.items():
-        updated = updated.replace(src, dst)
-    if updated != raw_text:
-        config_path.write_text(updated)
-        print(
-            f"ℹ️ Normalised boolean mode fields in {config_path} (text replace)")
-
-
-def normalise_boolean_mode_fields(config_path: Path) -> None:
-    """
-    Ensure Lightning callback/scheduler `mode` parameters are valid strings.
-    ** ALSO: Injects a valid ModelCheckpoint to override a terratorch bug. **
-    """
-    if config_path.suffix.lower() not in {".yaml", ".yml"}:
-        return
-
-    try:
-        raw_text = config_path.read_text()
-    except FileNotFoundError:
-        print(
-            f"⚠️ Config file not found, cannot patch: {config_path}", file=sys.stderr)
-        return
-
-    if not raw_text.strip():
-        return
-
-    if yaml is None:
-        _fallback_mode_text_replace(raw_text, config_path)
-        return
-
-    try:
-        parsed = yaml.safe_load(raw_text)
-    except Exception as exc:  # pragma: no cover - defensive logging
-        print(
-            f"⚠️ Failed to parse YAML config at {config_path}: {exc}. Falling back to text replacement.",
-            file=sys.stderr,
-        )
-        _fallback_mode_text_replace(raw_text, config_path)
-        return
-
-    if parsed is None:
-        return
-
-    # --- BEGIN NEW LOGIC ---
-    # This is the override for the terratorch `mode: True` bug.
-    # We inject a valid ModelCheckpoint config to prevent terratorch
-    # from injecting its own buggy, hard-coded one.
-
-    callbacks_changed = False
-    if "trainer" in parsed and "callbacks" in parsed["trainer"]:
-        callbacks = parsed["trainer"].get("callbacks")
-        if isinstance(callbacks, list):
-            found_checkpoint = False
-            for cb in callbacks:
-                if isinstance(cb, dict) and "ModelCheckpoint" in cb.get("class_path", ""):
-                    found_checkpoint = True
-                    break
-
-            if not found_checkpoint:
-                print(
-                    "ℹ️ Injecting valid ModelCheckpoint config to override terratorch bug.")
-                callbacks.append({
-                    "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
-                    "init_args": {
-                        "monitor": "val/loss",  # This value doesn't matter, but must be valid
-                        "mode": "min",         # This is the critical fix
-                        "save_top_k": 0        # Don't save anything
-                    }
-                })
-                callbacks_changed = True
-        else:  # Handle case where callbacks might not be a list initially
-            print("ℹ️ Initializing trainer callbacks list and injecting ModelCheckpoint.")
-            parsed["trainer"]["callbacks"] = [{
-                "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
-                "init_args": {
-                    "monitor": "val/loss",
-                    "mode": "min",
-                    "save_top_k": 0
-                }
-            }]
-            callbacks_changed = True
-    elif "trainer" in parsed:  # Handle case where trainer exists but callbacks doesn't
-        print("ℹ️ Adding trainer callbacks list and injecting ModelCheckpoint.")
-        parsed["trainer"]["callbacks"] = [{
-            "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
-            "init_args": {
-                "monitor": "val/loss",
-                "mode": "min",
-                "save_top_k": 0
-            }
-        }]
-        callbacks_changed = True
-    else:  # Handle case where trainer section doesn't exist
-        print("ℹ️ Adding trainer section and injecting ModelCheckpoint.")
-        parsed["trainer"] = {
-            "callbacks": [{
-                "class_path": "lightning.pytorch.callbacks.ModelCheckpoint",
-                "init_args": {
-                    "monitor": "val/loss",
-                    "mode": "min",
-                    "save_top_k": 0
-                }
-            }]
-        }
-        callbacks_changed = True
-    # --- END NEW LOGIC ---
-
-    # Now, run the original logic to fix any other 'mode: True' issues
-    nodes_changed = _normalise_mode_nodes(parsed)
-
-    if nodes_changed or callbacks_changed:  # Check if *either* change happened
-        try:
-            config_path.write_text(yaml.safe_dump(parsed, sort_keys=False))
-            print(f"✅ Patched and saved config file: {config_path}")
-        except Exception as write_exc:
-            print(
-                f"⚠️ Failed to write patched config file {config_path}: {write_exc}", file=sys.stderr)
-    else:
-        # --- NEW: Print message even if no change needed ---
-        print(f"✅ Config file already patched/correct: {config_path}")
 
 
 def upload_to_minio(file_path: str, object_name: str) -> str:
@@ -554,22 +321,19 @@ def fetch_sentinel_image(bbox: tuple, target_date: datetime) -> bytes:
         raise gr.Error(f"Failed to fetch satellite data: {e}")
 
 
-# --- THIS FUNCTION IS MODIFIED ---
 def ensure_files_exist():
     """
     On startup, check if the config and model files exist locally.
-    If not, download them. **Always applies patches.**
+    If not, download them from MinIO or fallback URLs.
     """
     files_to_check = {
         Path(CONFIG_PATH): {
             "minio": MODEL_CONFIG_FILENAME,
             "fallback": MODEL_CONFIG_FALLBACK_URL,
-            "patch_func": normalise_boolean_mode_fields,  # Reference to the patch function
         },
         Path(CHECKPOINT_PATH): {
             "minio": MODEL_CHECKPOINT_FILENAME,
             "fallback": MODEL_CHECKPOINT_FALLBACK_URL,
-            "patch_func": _strip_checkpoint_hparams,  # Reference to the patch function
         },
     }
 
@@ -594,7 +358,6 @@ def ensure_files_exist():
     for local_path, meta in files_to_check.items():
         minio_key = meta["minio"]
         fallback_url = meta["fallback"]
-        patch_func = meta["patch_func"]  # Get the patch function
 
         if not local_path.exists():
             local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -638,18 +401,10 @@ def ensure_files_exist():
                     f"❌ ERROR: Required model asset '{minio_key}' is unavailable.", file=sys.stderr)
                 sys.exit(1)
             else:
-                # Apply patch immediately after download
-                print(f"Applying patch to newly downloaded file: {local_path}")
-                patch_func(local_path)
                 print(f"✅ File ready: {local_path}")
 
         else:
-            # --- ALWAYS APPLY PATCH ---
-            print(f"File already exists locally, applying patch: {local_path}")
-            patch_func(local_path)
-            # --- END CHANGE ---
-
-# --- END MODIFIED FUNCTION ---
+            print(f"✅ File already exists locally: {local_path}")
 
 
 def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: str) -> str:
@@ -671,9 +426,6 @@ def run_terratorch_inference(input_dir: str, output_dir: str, input_filename: st
         "--trainer.devices=1",
         "--data.init_args.batch_size=1",
         "--trainer.default_root_dir=/app/data",
-        "--trainer.callbacks=null"
-        # --- REMOVED: "--trainer.enable_checkpointing=false" ---
-        # This is handled by the injected config patch now
     ]
 
     print(f"\nExecuting command: {' '.join(command)}")
