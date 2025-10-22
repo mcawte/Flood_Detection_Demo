@@ -2,19 +2,22 @@
 boto3>=1.28,<2
 requests>=2.31,<3
 fastapi>=0.110,<0.116
-# Align with MCP server requirements (>=0.31.1 introduces HTTP/2 bugfixes we rely on)
 uvicorn[standard]>=0.31.1,<0.32
 
 # Geospatial + data utilities
-numpy==2.0.2
-rasterio
-rioxarray
-global_land_mask
+numpy==1.26.4
+rasterio==1.4.3
+rioxarray==0.19.0
+global_land_mask==1.0.0
 sentinelhub
 cython>=3.0.2,<3.1
 
 # Model runtime
 gradio[mcp]>=5.38.0
 python-multipart>=0.0.18
-pytorch-lightning==1.9.5
+
+# ⚠️ Use "lightning" (v2+ package name). Do NOT install pytorch-lightning in parallel.
+lightning[pytorch-extra]==2.4.0
+
+# Terratorch pinned to your commit (0.99.5 lineage)
 terratorch @ git+https://github.com/IBM/terratorch.git@6d97521

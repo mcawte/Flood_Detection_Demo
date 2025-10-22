@@ -13,10 +13,12 @@ COPY requirements-backend.txt constraints-backend.txt /tmp/pip/
 
 # Install Python dependencies with pinned versions
 RUN pip3 install --no-cache-dir --upgrade pip setuptools wheel && \
-    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.1.0 torchvision && \
-    pip3 install --no-cache-dir numpy cython && \
-    pip3 install --no-cache-dir --no-build-isolation "rasterio>=1.3,<1.4" && \
-    pip3 install --no-cache-dir --upgrade-strategy only-if-needed -r /tmp/pip/requirements-backend.txt -c /tmp/pip/constraints-backend.txt
+    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.1.0 torchvision==0.16.0 && \
+    pip3 install --no-cache-dir numpy==1.26.4 cython && \
+    pip3 install --no-cache-dir --no-build-isolation rasterio==1.4.3 && \
+    # IMPORTANT: install everything else under constraints to force lightning==2.4.0, etc.
+    pip3 install --no-cache-dir --upgrade-strategy only-if-needed \
+      -r /tmp/pip/requirements-backend.txt -c /tmp/pip/constraints-backend.txt
 
 # Create directory structure
 WORKDIR /app
@@ -24,6 +26,7 @@ RUN mkdir -p /app/data/input /app/data/output /app/configs /app/models && chmod 
 
 # Copy only necessary files
 COPY ./app /app
+COPY ./configs /app/configs
 
 # Expose MCP over HTTP
 EXPOSE 8080
