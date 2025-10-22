@@ -6,10 +6,10 @@ jupyter==1.0.0
 matplotlib==3.8.0
 imagecodecs==2024.1.1
 global_land_mask==1.0.0
-numpy==1.26.4
+numpy
 GDAL==3.6.4
 imageio==2.37.0
 imageio-ffmpeg==0.6.0
 sentinelhub==3.11.3
 uvicorn>=0.31.1,<0.32
-pytorch-lightning==1.9.5
+
