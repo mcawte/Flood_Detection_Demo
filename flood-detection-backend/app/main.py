@@ -95,6 +95,46 @@ def upload_to_minio(file_path: str, object_name: str) -> str:
         raise gr.Error(f"Failed to upload result to MinIO: {e}")
 
 
+def ensure_minio_bucket() -> None:
+    """
+    Ensure that the required MinIO bucket exists.
+    Creates it if it doesn't exist.
+    """
+    if not MINIO_ACCESS_KEY or not MINIO_SECRET_KEY:
+        print("⚠️  MinIO credentials not configured. Skipping bucket initialization.", file=sys.stderr)
+        return
+
+    try:
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=MINIO_ENDPOINT,
+            aws_access_key_id=MINIO_ACCESS_KEY,
+            aws_secret_access_key=MINIO_SECRET_KEY,
+            region_name=MINIO_REGION,
+            use_ssl=MINIO_ENDPOINT.startswith('https://'),
+            verify=MINIO_VERIFY_SSL,
+        )
+
+        # Check if bucket exists
+        try:
+            s3_client.head_bucket(Bucket=MINIO_BUCKET)
+            print(f"✅ MinIO bucket '{MINIO_BUCKET}' already exists")
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code == '404':
+                # Bucket doesn't exist, create it
+                print(f"📦 Creating MinIO bucket '{MINIO_BUCKET}'...")
+                s3_client.create_bucket(Bucket=MINIO_BUCKET)
+                print(f"✅ MinIO bucket '{MINIO_BUCKET}' created successfully")
+            else:
+                # Some other error occurred
+                print(f"⚠️  Error checking MinIO bucket: {e}", file=sys.stderr)
+                raise
+    except Exception as e:
+        print(f"❌ Failed to initialize MinIO bucket: {e}", file=sys.stderr)
+        print("⚠️  Application will continue, but uploads may fail", file=sys.stderr)
+
+
 def download_file(url: str, dest: Path) -> None:
     """
     Download a file from the given URL to the destination path.
@@ -707,6 +747,14 @@ demo = gr.TabbedInterface(
 )
 
 api_app = FastAPI(title="Flood Detection Backend", version="1.0.0")
+
+
+@api_app.on_event("startup")
+async def startup_event():
+    """Initialize MinIO bucket on application startup."""
+    print("🚀 Running startup tasks...")
+    ensure_minio_bucket()
+    print("✅ Startup tasks completed")
 
 
 @api_app.get("/health")
